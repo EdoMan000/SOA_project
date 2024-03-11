@@ -53,22 +53,17 @@ module_param(the_syscall_table, ulong, 0660);
 
 unsigned long the_ni_syscall;
 
-unsigned long new_sys_call_array[] = {0x0,0x0};//please set to sys_got_sleep and sys_awake at startup
+unsigned long new_sys_call_array[] = {0x0,0x0}; //please set to sys_refmon_on and sys_refmon_off at startup
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
 #define AUDIT if(1)
 
-// #define NO (0)
-// #define YES (NO+1)
-
-static int enable_rec_on = 0;// this can be configured at run time via the sys file system - 1 meas any sleeping thread is freezed
+static int enable_rec_on = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured in ON mode
 module_param(enable_rec_on,int,0660);
 
-static int enable_rec_off = 0;// this can be configured at run time via the sys file system - 1 meas any sleeping thread is freezed
+static int enable_rec_off = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured in OFF mode
 module_param(enable_rec_off,int,0660);
-
-
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
