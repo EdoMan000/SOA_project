@@ -97,7 +97,6 @@ long sys_refmon_off = (unsigned long) __x64_sys_refmon_off;
 #else
 #endif
 
-
 int init_module(void) {
 
         int i;
@@ -137,7 +136,6 @@ int init_module(void) {
         return 0;
 
 }
-
 
 void cleanup_module(void) {
 
