@@ -42,26 +42,20 @@
 #include <linux/syscalls.h>
 #include "lib/include/scth.h"
 
-
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Edoardo Manenti <francesco.quaglia@uniroma2.it>");
+MODULE_AUTHOR("Edoardo Manenti <manenti000@gmail.com>");
 MODULE_DESCRIPTION("reference monitor");
-
-
 
 #define MODNAME "REFMON"
 
-
 unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0660);
-
 
 unsigned long the_ni_syscall;
 
 unsigned long new_sys_call_array[] = {0x0,0x0};//please set to sys_got_sleep and sys_awake at startup
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
-
 
 #define AUDIT if(1)
 
@@ -74,166 +68,39 @@ module_param(enable_rec_on,int,0660);
 static int enable_rec_off = 0;// this can be configured at run time via the sys file system - 1 meas any sleeping thread is freezed
 module_param(enable_rec_off,int,0660);
 
-// unsigned long count __attribute__((aligned(8)));//this is used to audit how many threads are still sleeping onto the sleep/wakeup queue
-// module_param(count,ulong,0660);
-
-// typedef struct _elem{
-//         struct task_struct *task;
-//         int pid;
-//         int awake;
-//         int already_hit;
-//         struct _elem * next;
-//         struct _elem * prev;
-// } elem;
-
-// elem head = {NULL,-1,-1,-1,NULL,NULL};
-// elem tail = {NULL,-1,-1,-1,NULL,NULL};
-// spinlock_t queue_lock;
 
 
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+__SYSCALL_DEFINEx(1, _refmon_on, int, unused){
+#else
+asmlinkage long sys_refmon_on(int unused){
+#endif
 
-// #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-// __SYSCALL_DEFINEx(1, _goto_sleep, int, unused){
-// #else
-// asmlinkage long sys_goto_sleep(int unused){
-// #endif
+        AUDIT
+        printk("%s: sys_refmon_on called from thread %d\n",MODNAME,current->pid);
+        return 0;
 
-// 	volatile elem me;
-//         elem *aux;
-//         DECLARE_WAIT_QUEUE_HEAD(the_queue);//here we use a private queue - wakeup is selective via wake_up_process
+}
 
-//         me.next = NULL;
-//         me.prev = NULL;
-//         me.task = current;
-//         me.pid  = current->pid;
-//         me.awake = NO;
-//         me.already_hit = NO;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+__SYSCALL_DEFINEx(1, _refmon_off, int, unused){
+#else
+asmlinkage long sys_refmon_off(int unused){
+#endif
+	AUDIT
+        printk("%s: sys_refmon_off called from thread %d\n",MODNAME,current->pid);
+        return 0;
 
-//         AUDIT
-//         printk("%s: sys_goto_sleep on strong fifo sleep/wakeup queue called from thread %d\n",MODNAME,current->pid);
-
-
-//         if(!enable_sleep){
-//                 printk("%s: sys_goto_sleep - sleeping not currently enabled\n",MODNAME);
-//                 return -1;
-//         }
-
-//         preempt_disable();//this is redundant here
-//         spin_lock(&queue_lock);
-
-//         aux = &tail;
-//         if(aux->prev == NULL){
-//                 spin_unlock(&queue_lock);
-//                 preempt_enable();
-//                 printk("%s: malformed sleep-wakeup-queue - service damaged\n",MODNAME);
-//                 return -1;
-//         }
-
-//         aux->prev->next = &me;
-//         me.prev = aux->prev;
-//         aux->prev = &me;
-//         me.next = aux;
-
-//         spin_unlock(&queue_lock);
-//         preempt_enable();//this is redundant here
-
-//         atomic_inc((atomic_t*)&count);//a new sleeper 
-
-//         AUDIT
-//         printk("%s: thread %d actually going to sleep\n",MODNAME,current->pid);
-                
-//         wait_event_interruptible(the_queue, me.awake == YES);
-        
-//         preempt_disable();
-//         spin_lock(&queue_lock);
-
-//         me.prev->next = me.next;//we know where we are thanks to double linkage
-//         me.next->prev = me.prev;
-
-//         spin_unlock(&queue_lock);
-//         preempt_enable();
-
-//         AUDIT
-//         printk("%s: thread %d exiting sleep for a wakeup or signal\n",MODNAME, current->pid);
-
-//         atomic_dec((atomic_t*)&count);//finally awaken
-
-//         if(me.awake == NO){
-//                 AUDIT
-//                 printk("%s: thread %d exiting sleep for signal\n",MODNAME, current->pid);
-//                 return -EINTR;
-//         }
-
-//         return 0;
-
-// }
-
-// #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-// __SYSCALL_DEFINEx(1, _awake, int, unused){
-// #else
-// asmlinkage long sys_awake(int unused){
-// #endif
-// 	struct task_struct *the_task;
-//         int its_pid = -1;
-//         elem *aux;
-
-
-//         printk("%s: sys_awake called from thread %d\n",MODNAME,current->pid);
-
-//         aux = &head;
-
-//         preempt_disable();//this is redundant here
-//         spin_lock(&queue_lock);
-
-//         if(aux == NULL){
-//                 spin_unlock(&queue_lock);
-//                 preempt_enable();
-//                 printk("%s: malformed sleep-wakeup-queue\n",MODNAME);
-//                 return -1;
-//         }
-
-//         while(aux->next != &tail){
-
-//                 AUDIT
-//                 printk("%s: in cycle\n",MODNAME);
-
-//                 if(aux->next->already_hit == NO){
-//                         the_task = aux->next->task;
-//                         aux->next->awake = YES;
-//                         aux->next->already_hit = YES;
-//                         its_pid = aux->next->pid;
-//                         wake_up_process(the_task);
-//                         goto awaken;
-//                 }
-
-//                 aux = aux->next;
-
-//         }
-
-//         spin_unlock(&queue_lock);
-//         preempt_enable();
-
-// 	return 0;
-
-// awaken:
-//         spin_unlock(&queue_lock);
-//         preempt_enable();//this is redundant here
-
-//         AUDIT
-//         printk("%s: called the awake of thread %d\n",MODNAME,its_pid);
-
-//         return its_pid;
-
-// }
+}
 
 
 
-// #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-// long sys_goto_sleep = (unsigned long) __x64_sys_goto_sleep;       
-// long sys_awake = (unsigned long) __x64_sys_awake;       
-// #else
-// #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+long sys_refmon_on = (unsigned long) __x64_sys_refmon_on;       
+long sys_refmon_off = (unsigned long) __x64_sys_refmon_off;       
+#else
+#endif
 
 
 int init_module(void) {
@@ -251,8 +118,8 @@ int init_module(void) {
            printk("%s: initializing - hacked entries %d\n",MODNAME,HACKED_ENTRIES);
         }
 
-        new_sys_call_array[0] = (unsigned long)sys_goto_sleep;
-        new_sys_call_array[1] = (unsigned long)sys_awake;
+        new_sys_call_array[0] = (unsigned long)sys_refmon_on;
+        new_sys_call_array[1] = (unsigned long)sys_refmon_off;
 
         ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
 
