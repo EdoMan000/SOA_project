@@ -36,37 +36,33 @@ define rmmod_module
 	@echo "Unmounting $2 module..." && { cd $1 && sudo rmmod the_$2.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,$2,unmount); }
 endef
 
-define check_rec
-	@sudo bash -c 'rec_on="$$(cat /sys/module/the_reference_monitor/parameters/enable_rec_on 2>/dev/null)"; \
-              rec_off="$$(cat /sys/module/the_reference_monitor/parameters/enable_rec_off 2>/dev/null)"; \
-              if [ "$$rec_on" -eq 1 ] && [ "$$rec_off" -eq 1 ]; then \
-                  echo "The reference monitor is currently reconfigurable in both ON and OFF modes."; \
-              elif [ "$$rec_on" -eq 0 ] && [ "$$rec_off" -eq 0 ]; then \
+define check_reconfigurability
+	@sudo bash -c 'rec="$$(cat /sys/module/the_reference_monitor/parameters/enable_reconfiguration 2>/dev/null)"; \
+              if [ "$$rec" -eq 1 ]; then \
+                  echo "The reference monitor is currently reconfigurable."; \
+              elif [ "$$rec" -eq 0 ]; then \
                   echo "The reference monitor is currently not reconfigurable."; \
-              elif [ "$$rec_on" -eq 1 ] && [ "$$rec_off" -eq 0 ]; then \
-                  echo "The reference monitor is currently reconfigurable only in ON mode."; \
-              elif [ "$$rec_on" -eq 0 ] && [ "$$rec_off" -eq 1 ]; then \
-                  echo "The reference monitor is currently reconfigurable only in OFF mode."; \
               else \
-                  echo "Unable to determine the configuration state of the reference monitor."; \
+                  echo "Unable to determine the reconfigurability of the reference monitor."; \
+                  echo "Error: UNKNOWN_REC_STATE_VAL -> $$rec"; \
               fi'
 endef
 
 define set_parameter
-	@rec_value="$$(sudo bash -c 'cat /sys/module/the_reference_monitor/parameters/$(1) 2>/dev/null || echo "error"')"; \
-	if [ "$$rec_value" != "error" ]; then \
-		if [ "$$rec_value" -ne $(2) ]; then \
-			sudo bash -c 'echo "$(2)" > /sys/module/the_reference_monitor/parameters/$(1)'; \
+	@rec="$$(sudo bash -c 'cat /sys/module/the_reference_monitor/parameters/enable_reconfiguration 2>/dev/null || echo "error"')"; \
+	if [ "$$rec" != "error" ]; then \
+		if [ "$$rec" -ne $(2) ]; then \
+			sudo bash -c 'echo "$(2)" > /sys/module/the_reference_monitor/parameters/enable_reconfiguration'; \
 			if [ "$(2)" = "1" ]; then \
-				echo "The reference monitor can now be reconfigured in $(3) mode"; \
+				echo "The reference monitor can now be reconfigured"; \
 			else \
-				echo "The reference monitor can no longer be reconfigured in $(3) mode"; \
+				echo "The reference monitor can no longer be reconfigured"; \
 			fi \
 		else \
 			if [ "$(2)" = "1" ]; then \
-				echo "Warning: The reconfiguration for the reference monitor is already enabled in $(3) mode"; \
+				echo "Warning: The reconfiguration for the reference monitor is already enabled"; \
 			else \
-				echo "Warning: The reconfiguration for the reference monitor is already disabled in $(3) mode"; \
+				echo "Warning: The reconfiguration for the reference monitor is already disabled"; \
 			fi \
 		fi \
 	else \
@@ -92,26 +88,12 @@ unmount:
 	$(call rmmod_module,usctm,usctm)
 	$(call rmmod_module,.,reference-monitor)
 
-check_rec:
-	$(call check_rec)
+check:
+	$(call check_reconfigurability)
 
-enable_rec_on:
-	$(call set_parameter,enable_rec_on,1,ON)
+enable:
+	$(call set_parameter,enable_reconfiguration,1)
 
-enable_rec_off:
-	$(call set_parameter,enable_rec_off,1,OFF)
-
-disable_rec_on:
-	$(call set_parameter,enable_rec_on,0,ON)
-
-disable_rec_off:
-	$(call set_parameter,enable_rec_off,0,OFF)
-
-enable_rec_all:
-	$(call set_parameter,enable_rec_on,1,ON)
-	$(call set_parameter,enable_rec_off,1,OFF)
-
-disable_rec_all:
-	$(call set_parameter,enable_rec_on,0,ON)
-	$(call set_parameter,enable_rec_off,0,OFF)
+disable:
+	$(call set_parameter,enable_reconfiguration,0)
 

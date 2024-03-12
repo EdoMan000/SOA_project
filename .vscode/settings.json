@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "scth.h": "c",
+        "kernel.h": "c",
+        "module.h": "c",
+        "errno.h": "c",
+        "sched.h": "c",
+        "version.h": "c",
+        "time.h": "c",
+        "string.h": "c"
+    }
+}

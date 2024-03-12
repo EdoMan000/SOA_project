@@ -48,47 +48,183 @@ MODULE_DESCRIPTION("reference monitor");
 
 #define MODNAME "REFMON"
 
+//===================================
+#define CURRENT_EUID current->cred->euid.val
+#define MAX_PATH_LEN 256
+#define MAX_PROGRAM_PATH_LEN 256
+#define MAX_HASH_LEN 64
+#define MAX_PASSWORD_LEN 64
+
+typedef struct _refmon_path {
+    char path[MAX_PATH_LEN];
+    struct list_head list;
+} refmon_path;
+
+typedef struct _refmon {
+    enum {
+        ON,
+        OFF
+    } state;
+    spinlock_t lock;
+    char password[MAX_PASSWORD_LEN];  
+    struct list_head protected_paths;           
+} refmon;
+
+typedef struct _file_audit_log {
+    pid_t tgid;
+    pid_t tid;
+    uid_t uid;
+    uid_t euid;
+    char program_path[MAX_PROGRAM_PATH_LEN];
+    char hash[MAX_HASH_LEN];
+    struct list_head list;
+} file_audit_log;
+
+refmon reference_monitor;
+
+//===================================
+
 unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0660);
 
 unsigned long the_ni_syscall;
 
-unsigned long new_sys_call_array[] = {0x0,0x0}; //please set to sys_refmon_on and sys_refmon_off at startup
+unsigned long new_sys_call_array[] = {0x0,0x0};
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
 #define AUDIT if(1)
 
-static int enable_rec_on = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured in ON mode
-module_param(enable_rec_on,int,0660);
-
-static int enable_rec_off = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured in OFF mode
-module_param(enable_rec_off,int,0660);
-
+static int enable_reconfiguration = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
+module_param(enable_reconfiguration,int,0660);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _refmon_on, int, unused){
+__SYSCALL_DEFINEx(0, _refmon_on){
 #else
-asmlinkage long sys_refmon_on(int unused){
+asmlinkage long sys_refmon_on(){
 #endif
-
         AUDIT
         printk("%s: sys_refmon_on called from thread %d\n",MODNAME,current->pid);
+
+        spin_lock(&(reference_monitor.lock));
+
+        if(CURRENT_EUID != 0){
+                spin_unlock(&(reference_monitor.lock));
+                return -1;
+        }
+
+        switch (reference_monitor.state)//TODO
+        {
+        case /* constant-expression */:
+                /* code */
+                break;
+        
+        default:
+                break;
+        }
+
+        reference_monitor.state = ON
+
+        spin_unlock(&(reference_monitor.lock));
+        printk("%s: The reference monitor was turned ON.\n",MODNAME);
         return 0;
 
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _refmon_off, int, unused){
+__SYSCALL_DEFINEx(0, _refmon_off){
 #else
-asmlinkage long sys_refmon_off(int unused){
+asmlinkage long sys_refmon_off(){
 #endif
 	AUDIT
         printk("%s: sys_refmon_off called from thread %d\n",MODNAME,current->pid);
+
+        spin_lock(&(reference_monitor.lock));
+
+        if(CURRENT_EUID != 0){
+                spin_unlock(&(reference_monitor.lock));
+                return -1;
+        }
+
+        switch (reference_monitor.state)//TODO
+        {
+        case /* constant-expression */:
+                /* code */
+                break;
+        
+        default:
+                break;
+        }
+
+        reference_monitor.state = OFF
+
+        spin_unlock(&(reference_monitor.lock));
+
         return 0;
 
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+__SYSCALL_DEFINEx(2, _refmon_protect, const char*, passw, const char*, new_path){
+#else
+asmlinkage long sys_refmon_protect(const char* passw, const char* new_path){
+#endif
+	AUDIT
+        printk("%s: sys_refmon_protect called from thread %d\n",MODNAME,current->pid);
+
+        spin_lock(&(reference_monitor.lock));
+        
+        if(CURRENT_EUID != 0 || authenticate(passw) != 0 || atomic_read(enable_reconfiguration) == 0){
+                printk("%s: couldn't perform sys_refmon_protect\n",MODNAME);
+                spin_unlock(&(reference_monitor.lock));
+                return -1;
+        }
+
+
+
+        spin_unlock(&(reference_monitor.lock));
+
+        return 0;
+
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+__SYSCALL_DEFINEx(1, _refmon_unprotect, const char*, passw, const char*, old_path){
+#else
+asmlinkage long sys_refmon_unprotect(const char* passw, const char* old_path){
+#endif
+	AUDIT
+        printk("%s: sys_refmon_unprotect called from thread %d\n",MODNAME,current->pid);
+
+        spin_lock(&(reference_monitor.lock));
+        
+        if(CURRENT_EUID != 0){
+                err_msg = "Current EUID is not 0"
+                goto operation_failed;
+        }else if (authenticate(passw) != 0)
+        {
+                err_msg = "Authentication failed"
+                goto operation_failed;
+        }else if (atomic_read(enable_reconfiguration) == 0)
+        {
+                err_msg = "Reconfiguration is not enabled"
+                goto operation_failed;
+        }else if (//TODO aggiungere caso di path non valido)
+        {
+                err_msg = ""
+                goto operation_failed;
+        }
+
+
+
+        spin_unlock(&(reference_monitor.lock));
+        return 0;
+
+operation_failed:
+        printk("%s: %s\n",MODNAME,err_msg);
+        spin_unlock(&(reference_monitor.lock));
+        return -1;
+}
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)

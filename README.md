@@ -15,12 +15,12 @@ It is up to the software designer to determine if the above states ON/OFF/REC-ON
 
 In addition to the above specifics, the project should also include the realization of a file system where a single append-only file should record the following tuple of data (per line of the file) each time an attempt to write-open a protected file system path is attempted:
 
-the process TGID
-the thread ID
-the user-id
-the effective user-id
-the program path-name that is currently attempting the open
-a cryptographic hash of the program file content
-The the computation of the cryptographic hash and the writing of the above tuple should be carried in deferred work.
+the process TGID <br>
+the thread ID <br>
+the user-id <br>
+the effective user-id <br>
+the program path-name that is currently attempting the open <br>
+a cryptographic hash of the program file content <br>
+The computation of the cryptographic hash and the writing of the above tuple should be carried in deferred work. <br>
 
 $NB:]$  Try to manage hard links to files and include them in the security mechanism
