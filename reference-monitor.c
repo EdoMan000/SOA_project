@@ -104,7 +104,7 @@ __SYSCALL_DEFINEx(0, _refmon_on){
 asmlinkage long sys_refmon_on(){
 #endif
         AUDIT
-        printk("%s: sys_refmon_on called from thread %d\n",MODNAME,current->pid);
+        pr_info("%s: sys_refmon_on called from thread %d\n",MODNAME,current->pid);
 
         spin_lock(&(reference_monitor.lock));
 
@@ -126,7 +126,9 @@ asmlinkage long sys_refmon_on(){
         reference_monitor.state = ON
 
         spin_unlock(&(reference_monitor.lock));
-        printk("%s: The reference monitor was turned ON.\n",MODNAME);
+        AUDIT
+        pr_info("%s: The reference monitor was turned ON.\n",MODNAME);
+
         return 0;
 
 }
@@ -165,33 +167,60 @@ asmlinkage long sys_refmon_off(){
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(2, _refmon_protect, const char*, passw, const char*, new_path){
+__SYSCALL_DEFINEx(2, _refmon_protect, const char*, passw, char[MAX_PATH_LEN], new_path){
 #else
-asmlinkage long sys_refmon_protect(const char* passw, const char* new_path){
+asmlinkage long sys_refmon_protect(const char* passw, char[MAX_PATH_LEN] new_path){
 #endif
 	AUDIT
         printk("%s: sys_refmon_protect called from thread %d\n",MODNAME,current->pid);
 
         spin_lock(&(reference_monitor.lock));
         
-        if(CURRENT_EUID != 0 || authenticate(passw) != 0 || atomic_read(enable_reconfiguration) == 0){
-                printk("%s: couldn't perform sys_refmon_protect\n",MODNAME);
-                spin_unlock(&(reference_monitor.lock));
+        if(CURRENT_EUID != 0){
+                err_msg = "Current EUID is not 0"
+                goto operation_failed;
+        }else if (authenticate(passw) != 0)
+        {
+                err_msg = "Authentication failed"
+                goto operation_failed;
+        }else if (atomic_read(enable_reconfiguration) == 0)
+        {
+                err_msg = "Reconfiguration is not enabled"
+                goto operation_failed;
+        }else if ()//TODO aggiungere caso di path non valido
+        {
+                err_msg = ""
+                goto operation_failed;
+        }
+        
+        struct refmon_path *new_refmon_path = kmalloc(sizeof(struct refmon_path), GFP_KERNEL);
+        if (!new_refmon_path) {
+                pr_err("%s: Memory allocation failed for new refmon_path\n",MODNAME);
                 return -1;
         }
+        
+        new_refmon_path->path = new_path;
+        INIT_LIST_HEAD(&new_refmon_path->list);
+        list_add_tail(&new_refmon_path->list, &reference_monitor.protected_paths);
 
-
+        pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, new_path);
 
         spin_unlock(&(reference_monitor.lock));
 
         return 0;
 
+operation_failed:
+        AUDIT
+        pr_err("%s: %s\n",MODNAME,err_msg);
+
+        spin_unlock(&(reference_monitor.lock));
+        return -1;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _refmon_unprotect, const char*, passw, const char*, old_path){
+__SYSCALL_DEFINEx(1, _refmon_unprotect, const char*, passw, char[MAX_PATH_LEN], old_path){
 #else
-asmlinkage long sys_refmon_unprotect(const char* passw, const char* old_path){
+asmlinkage long sys_refmon_unprotect(const char* passw, char[MAX_PATH_LEN] old_path){
 #endif
 	AUDIT
         printk("%s: sys_refmon_unprotect called from thread %d\n",MODNAME,current->pid);
@@ -209,19 +238,35 @@ asmlinkage long sys_refmon_unprotect(const char* passw, const char* old_path){
         {
                 err_msg = "Reconfiguration is not enabled"
                 goto operation_failed;
-        }else if (//TODO aggiungere caso di path non valido)
+        }else if ()//TODO aggiungere caso di path non valido
         {
                 err_msg = ""
                 goto operation_failed;
         }
 
+        struct refmon_path *entry, *tmp;
 
+        list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
+                if (entry->path == old_path) {
+                list_del(&entry->list);
+                kfree(entry);
+
+                AUDIT
+                pr_info("%s: Path '%s' will no longer be monitored\n", MODNAME, old_path);
+                return;
+                }
+        }
+
+        AUDIT
+        pr_info("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, old_path);
 
         spin_unlock(&(reference_monitor.lock));
         return 0;
 
 operation_failed:
-        printk("%s: %s\n",MODNAME,err_msg);
+        AUDIT
+        pr_err("%s: %s\n",MODNAME,err_msg);
+
         spin_unlock(&(reference_monitor.lock));
         return -1;
 }
