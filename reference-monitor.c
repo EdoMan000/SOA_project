@@ -39,8 +39,10 @@
 #include <asm/cacheflush.h>
 #include <asm/apic.h>
 #include <asm/io.h>
+#include <linux/string.h>
 #include <linux/syscalls.h>
 #include "lib/include/scth.h"
+#include "utils/include/sha256_utils.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Edoardo Manenti <manenti000@gmail.com>");
@@ -52,8 +54,7 @@ MODULE_DESCRIPTION("reference monitor");
 #define CURRENT_EUID current->cred->euid.val
 #define MAX_PATH_LEN 256
 #define MAX_PROGRAM_PATH_LEN 256
-#define MAX_HASH_LEN 64
-#define MAX_PASSWORD_LEN 64
+#define MAX_PASSW_LEN 32
 
 typedef struct _refmon_path {
     char path[MAX_PATH_LEN];
@@ -66,7 +67,7 @@ typedef struct _refmon {
         OFF
     } state;
     spinlock_t lock;
-    char password[MAX_PASSWORD_LEN];  
+    char password_digest[SHA256_DIGEST_SIZE];  
     struct list_head protected_paths;           
 } refmon;
 
@@ -76,7 +77,7 @@ typedef struct _file_audit_log {
     uid_t uid;
     uid_t euid;
     char program_path[MAX_PROGRAM_PATH_LEN];
-    char hash[MAX_HASH_LEN];
+    char hash[SHA256_DIGEST_SIZE];
     struct list_head list;
 } file_audit_log;
 
@@ -85,11 +86,11 @@ refmon reference_monitor;
 //===================================
 
 unsigned long the_syscall_table = 0x0;
-module_param(the_syscall_table, ulong, 0660);
+module_param(the_syscall_table, ulong, 0);
 
 unsigned long the_ni_syscall;
 
-unsigned long new_sys_call_array[] = {0x0,0x0};
+unsigned long new_sys_call_array[] = {0x0,0x0,0x0,0x0};
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
@@ -98,34 +99,37 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 static int enable_reconfiguration = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
 module_param(enable_reconfiguration,int,0660);
 
+char the_refmon_secret[MAX_PASSW_LEN];
+memset(the_refmon_secret, 0, sizeof(the_refmon_secret));
+module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(0, _refmon_on){
+__SYSCALL_DEFINEx(1, _refmon_on, int, unused){
 #else
-asmlinkage long sys_refmon_on(){
+asmlinkage long sys_refmon_on(int unused){
 #endif
         AUDIT
         pr_info("%s: sys_refmon_on called from thread %d\n",MODNAME,current->pid);
 
-        spin_lock(&(reference_monitor.lock));
+        spin_lock(&reference_monitor.lock);
 
         if(CURRENT_EUID != 0){
-                spin_unlock(&(reference_monitor.lock));
+                spin_unlock(&reference_monitor.lock);
                 return -1;
         }
 
-        switch (reference_monitor.state)//TODO
+        switch (reference_monitor.state)
         {
-        case /* constant-expression */:
-                /* code */
+        case OFF:
+                /* code */ //TODO attivare kprobes
                 break;
-        
         default:
                 break;
         }
 
-        reference_monitor.state = ON
+        reference_monitor.state = ON;
 
-        spin_unlock(&(reference_monitor.lock));
+        spin_unlock(&reference_monitor.lock);
         AUDIT
         pr_info("%s: The reference monitor was turned ON.\n",MODNAME);
 
@@ -134,64 +138,70 @@ asmlinkage long sys_refmon_on(){
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(0, _refmon_off){
+__SYSCALL_DEFINEx(1, _refmon_off, int, unused){
 #else
-asmlinkage long sys_refmon_off(){
+asmlinkage long sys_refmon_off(int unused){
 #endif
 	AUDIT
-        printk("%s: sys_refmon_off called from thread %d\n",MODNAME,current->pid);
+        pr_info("%s: sys_refmon_off called from thread %d\n",MODNAME,current->pid);
 
-        spin_lock(&(reference_monitor.lock));
+        spin_lock(&reference_monitor.lock);
 
         if(CURRENT_EUID != 0){
-                spin_unlock(&(reference_monitor.lock));
+                spin_unlock(&reference_monitor.lock);
                 return -1;
         }
-
-        switch (reference_monitor.state)//TODO
+        switch (reference_monitor.state)
         {
-        case /* constant-expression */:
-                /* code */
+        case ON:
+                /* code */ //TODO disabilitare kprobes
                 break;
         
         default:
+                AUDIT
+                pr_info("%s: Monitor was already OFF\n", MODNAME);
                 break;
         }
 
-        reference_monitor.state = OFF
+        reference_monitor.state = OFF;
 
-        spin_unlock(&(reference_monitor.lock));
+        spin_unlock(&reference_monitor.lock);
+        AUDIT
+        pr_info("%s: The reference monitor was turned OFF.\n",MODNAME);
 
         return 0;
 
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(2, _refmon_protect, const char*, passw, char[MAX_PATH_LEN], new_path){
+__SYSCALL_DEFINEx(2, _refmon_protect, char *, passw, char *, new_path){
 #else
-asmlinkage long sys_refmon_protect(const char* passw, char[MAX_PATH_LEN] new_path){
+asmlinkage long sys_refmon_protect(char *passw, char *new_path){
 #endif
 	AUDIT
-        printk("%s: sys_refmon_protect called from thread %d\n",MODNAME,current->pid);
+        pr_info("%s: sys_refmon_protect called from thread %d\n",MODNAME,current->pid);
 
-        spin_lock(&(reference_monitor.lock));
+        spin_lock(&reference_monitor.lock);
         
+        char* err_msg;
         if(CURRENT_EUID != 0){
-                err_msg = "Current EUID is not 0"
+                err_msg = "Current EUID is not 0";
                 goto operation_failed;
-        }else if (authenticate(passw) != 0)
+        }else if (authenticate(passw, reference_monitor.password_digest)  != 0)
         {
-                err_msg = "Authentication failed"
+                err_msg = "Authentication failed";
                 goto operation_failed;
-        }else if (atomic_read(enable_reconfiguration) == 0)
+        }else if (enable_reconfiguration == 0) //TODO check atomic_read
         {
-                err_msg = "Reconfiguration is not enabled"
-                goto operation_failed;
-        }else if ()//TODO aggiungere caso di path non valido
-        {
-                err_msg = ""
+                err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
         }
+        //TODO aggiungere caso di path non valido
+        // else if ()
+        // {
+        //         err_msg = "";
+        //         goto operation_failed;
+        // }
         
         struct refmon_path *new_refmon_path = kmalloc(sizeof(struct refmon_path), GFP_KERNEL);
         if (!new_refmon_path) {
@@ -202,135 +212,156 @@ asmlinkage long sys_refmon_protect(const char* passw, char[MAX_PATH_LEN] new_pat
         new_refmon_path->path = new_path;
         INIT_LIST_HEAD(&new_refmon_path->list);
         list_add_tail(&new_refmon_path->list, &reference_monitor.protected_paths);
-
+        AUDIT
         pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, new_path);
 
-        spin_unlock(&(reference_monitor.lock));
+        spin_unlock(&reference_monitor.lock);
 
         return 0;
 
 operation_failed:
-        AUDIT
         pr_err("%s: %s\n",MODNAME,err_msg);
 
-        spin_unlock(&(reference_monitor.lock));
+        spin_unlock(&reference_monitor.lock);
         return -1;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _refmon_unprotect, const char*, passw, char[MAX_PATH_LEN], old_path){
+__SYSCALL_DEFINEx(2, _refmon_unprotect, char *, passw, char *, old_path){
 #else
-asmlinkage long sys_refmon_unprotect(const char* passw, char[MAX_PATH_LEN] old_path){
+asmlinkage long sys_refmon_unprotect(char *passw, char *old_path){
 #endif
 	AUDIT
-        printk("%s: sys_refmon_unprotect called from thread %d\n",MODNAME,current->pid);
+        pr_info("%s: sys_refmon_unprotect called from thread %d\n",MODNAME,current->pid);
 
-        spin_lock(&(reference_monitor.lock));
+        spin_lock(&reference_monitor.lock);
         
+        char* err_msg;
         if(CURRENT_EUID != 0){
-                err_msg = "Current EUID is not 0"
+                err_msg = "Current EUID is not 0";
                 goto operation_failed;
-        }else if (authenticate(passw) != 0)
+        }else if (authenticate(passw, reference_monitor.password_digest) != 0)
         {
-                err_msg = "Authentication failed"
+                err_msg = "Authentication failed";
                 goto operation_failed;
-        }else if (atomic_read(enable_reconfiguration) == 0)
+        }else if (enable_reconfiguration == 0)//TODO check atomic_read
         {
-                err_msg = "Reconfiguration is not enabled"
-                goto operation_failed;
-        }else if ()//TODO aggiungere caso di path non valido
-        {
-                err_msg = ""
+                err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
         }
+        //TODO aggiungere caso di path non valido
+        // else if ()
+        // {
+        //         err_msg = "";
+        //         goto operation_failed;
+        // }
 
         struct refmon_path *entry, *tmp;
 
         list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
                 if (entry->path == old_path) {
-                list_del(&entry->list);
-                kfree(entry);
+                        list_del(&entry->list);
+                        kfree(entry);
 
-                AUDIT
-                pr_info("%s: Path '%s' will no longer be monitored\n", MODNAME, old_path);
-                return;
+                        AUDIT
+                        pr_info("%s: Path '%s' will no longer be monitored\n", MODNAME, old_path);
+                        return 0;
                 }
         }
 
         AUDIT
         pr_info("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, old_path);
 
-        spin_unlock(&(reference_monitor.lock));
+        spin_unlock(&reference_monitor.lock);
         return 0;
 
 operation_failed:
-        AUDIT
         pr_err("%s: %s\n",MODNAME,err_msg);
 
-        spin_unlock(&(reference_monitor.lock));
+        spin_unlock(&reference_monitor.lock);
         return -1;
 }
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-long sys_refmon_on = (unsigned long) __x64_sys_refmon_on;       
-long sys_refmon_off = (unsigned long) __x64_sys_refmon_off;       
+long sys_refmon_on = (unsigned long) __x64_sys_refmon_on;
+long sys_refmon_off = (unsigned long) __x64_sys_refmon_off;
+long sys_refmon_protect = (unsigned long) __x64_sys_refmon_protect;
+long sys_refmon_unprotect = (unsigned long) __x64_sys_refmon_unprotect;
 #else
 #endif
 
 int init_module(void) {
-
         int i;
         int ret;
+        AUDIT
+        pr_info("%s: starting up\n",MODNAME);
 
-        if (the_syscall_table == 0x0){
-           printk("%s: cannot manage sys_call_table address set to 0x0\n",MODNAME);
-           return -1;
-        }
-
-        AUDIT{
-           printk("%s: received sys_call_table address %px\n",MODNAME,(void*)the_syscall_table);
-           printk("%s: initializing - hacked entries %d\n",MODNAME,HACKED_ENTRIES);
-        }
-
-        new_sys_call_array[0] = (unsigned long)sys_refmon_on;
-        new_sys_call_array[1] = (unsigned long)sys_refmon_off;
-
-        ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
-
-
-        if (ret != HACKED_ENTRIES){
-                printk("%s: could not hack %d entries (just %d)\n",MODNAME,HACKED_ENTRIES,ret);
+        if (strnlen(the_refmon_secret,MAX_PASSW_LEN) == 0){ //TODO vedere se necessario controllo sulla lunghezza eccessiva
+                pr_err("%s: must insert a non-empty secret\n",MODNAME);
                 return -1;
         }
+        //init reference monitor struct
+        reference_monitor.state = OFF;
+        spin_lock_init(&reference_monitor.lock);
+        INIT_LIST_HEAD(&reference_monitor.protected_paths);
 
+        unsigned char digest[SHA256_DIGEST_SIZE];
+        int sha_ret = do_sha256(the_refmon_secret, digest);
+        if (sha_ret){
+                pr_err("%s: password encryption failed\n",MODNAME);
+                return sha_ret;
+        }
+        pr_info("%s: starting up\n",MODNAME);
+        memcpy(reference_monitor.password_digest, digest, SHA256_DIGEST_SIZE);
+        memset(the_refmon_secret, 0, sizeof(the_refmon_secret));
+
+        //hack syscall table
+        if (the_syscall_table == 0x0){
+                pr_err("%s: cannot manage sys_call_table address set to 0x0\n",MODNAME);
+                return -1;
+        }
+        AUDIT{
+           pr_info("%s: received sys_call_table address %px\n",MODNAME,(void*)the_syscall_table);
+           pr_info("%s: initializing - hacked entries %d\n",MODNAME,HACKED_ENTRIES);
+        }
+        new_sys_call_array[0] = (unsigned long)sys_refmon_on;
+        new_sys_call_array[1] = (unsigned long)sys_refmon_off;
+        new_sys_call_array[2] = (unsigned long)sys_refmon_protect;
+        new_sys_call_array[3] = (unsigned long)sys_refmon_unprotect;
+        ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
+        if (ret != HACKED_ENTRIES){
+                pr_err("%s: could not hack %d entries (just %d)\n",MODNAME,HACKED_ENTRIES,ret);
+                return -1;
+        }
         unprotect_memory();
-
         for(i=0;i<HACKED_ENTRIES;i++){
                 ((unsigned long *)the_syscall_table)[restore[i]] = (unsigned long)new_sys_call_array[i];
         }
-
         protect_memory();
+        AUDIT
+        pr_info("%s: all new system-calls correctly installed on sys-call table\n",MODNAME);
 
-        printk("%s: all new system-calls correctly installed on sys-call table\n",MODNAME);
+        //TODO register kprobes
+        AUDIT
+        pr_info("%s: all new kprobes correctly registered\n",MODNAME);
 
         return 0;
 
 }
 
 void cleanup_module(void) {
-
         int i;
-
-        printk("%s: shutting down\n",MODNAME);
+        AUDIT
+        pr_info("%s: shutting down\n",MODNAME);
 
         unprotect_memory();
         for(i=0;i<HACKED_ENTRIES;i++){
                 ((unsigned long *)the_syscall_table)[restore[i]] = the_ni_syscall;
         }
         protect_memory();
-        printk("%s: sys-call table restored to its original content\n",MODNAME);
-
+        AUDIT
+        pr_info("%s: sys-call table restored to its original content\n",MODNAME);
 }
 
 

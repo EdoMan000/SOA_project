@@ -8,6 +8,7 @@
         "version.h": "c",
         "time.h": "c",
         "string.h": "c",
-        "type_traits": "c"
+        "type_traits": "c",
+        "io.h": "c"
     }
 }
