@@ -212,17 +212,16 @@ asmlinkage long sys_refmon_protect(char *passw, char *new_path){
         new_refmon_path->path = new_path;
         INIT_LIST_HEAD(&new_refmon_path->list);
         list_add_tail(&new_refmon_path->list, &reference_monitor.protected_paths);
-        AUDIT
-        pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, new_path);
 
         spin_unlock(&reference_monitor.lock);
+        AUDIT
+        pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, new_path);
 
         return 0;
 
 operation_failed:
-        pr_err("%s: %s\n",MODNAME,err_msg);
-
         spin_unlock(&reference_monitor.lock);
+        pr_err("%s: %s\n",MODNAME,err_msg);
         return -1;
 }
 
@@ -302,7 +301,7 @@ int init_module(void) {
                 return -1;
         }
         //init reference monitor struct
-        reference_monitor.state = OFF;
+        reference_monitor.state = ON; //scegliere se mettere off e spostare il settaggio delle kprobes
         spin_lock_init(&reference_monitor.lock);
         INIT_LIST_HEAD(&reference_monitor.protected_paths);
 
@@ -344,7 +343,7 @@ int init_module(void) {
 
         //TODO register kprobes
         AUDIT
-        pr_info("%s: all new kprobes correctly registered\n",MODNAME);
+        pr_info("%s: all kprobes correctly registered\n",MODNAME);
 
         return 0;
 
@@ -362,6 +361,10 @@ void cleanup_module(void) {
         protect_memory();
         AUDIT
         pr_info("%s: sys-call table restored to its original content\n",MODNAME);
+
+        //TODO unnregister kprobes
+        AUDIT
+        pr_info("%s: all kprobes correctly unregistered\n",MODNAME);
 }
 
 
