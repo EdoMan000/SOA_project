@@ -6,13 +6,17 @@
 
 
 
-int sleep_or_awake(long int x){
+int call_the_syscall(long int x){
+	if(x == 174 || x == 177 ){
+		printf("calling syscall %d\n",x);
+		return syscall(x, "Th15_I5_4_t3s7_p4s5W0rd", "/home/manenti_0333574/Scaricati");
+	}
 	return syscall(x);
 }
 
 void* do_job(void * arg){
 	int res;
-	res = sleep_or_awake((long int)arg);
+	res = call_the_syscall((long int)arg);
 	printf("sys call %ld returned value %d\n",(long int)arg,res);
 	return NULL;
 }

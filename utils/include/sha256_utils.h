@@ -5,7 +5,7 @@
 
 #include <crypto/hash.h>
 
-int do_sha256(const char *data, unsigned char *out_digest);
+int do_sha256(const unsigned char *data, unsigned char *out_digest);
 int authenticate(const char *passw_to_check, const unsigned char *reference_digest);
 
 #endif

@@ -99,9 +99,12 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 static int enable_reconfiguration = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
 module_param(enable_reconfiguration,int,0660);
 
-char the_refmon_secret[MAX_PASSW_LEN];
-memset(the_refmon_secret, 0, sizeof(the_refmon_secret));
-module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
+// char the_refmon_secret[MAX_PASSW_LEN];
+// memset(the_refmon_secret, 0, sizeof(the_refmon_secret));
+// module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
+static char the_refmon_secret[MAX_PASSW_LEN + 1] = ""; // +1 for null terminator
+module_param_string(the_refmon_secret, the_refmon_secret, sizeof(the_refmon_secret), 0);
+
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 __SYSCALL_DEFINEx(1, _refmon_on, int, unused){
@@ -196,22 +199,22 @@ asmlinkage long sys_refmon_protect(char *passw, char *new_path){
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
         }
-        //TODO aggiungere caso di path non valido
-        // else if ()
-        // {
-        //         err_msg = "";
-        //         goto operation_failed;
+        // //TODO aggiungere caso di path non valido
+        // // else if ()
+        // // {
+        // //         err_msg = "";
+        // //         goto operation_failed;
+        // // }
+        
+        // struct refmon_path *new_refmon_path = kmalloc(sizeof(struct refmon_path), GFP_KERNEL);
+        // if (!new_refmon_path) {
+        //         pr_err("%s: Memory allocation failed for new refmon_path\n",MODNAME);
+        //         return -1;
         // }
         
-        struct refmon_path *new_refmon_path = kmalloc(sizeof(struct refmon_path), GFP_KERNEL);
-        if (!new_refmon_path) {
-                pr_err("%s: Memory allocation failed for new refmon_path\n",MODNAME);
-                return -1;
-        }
-        
-        new_refmon_path->path = new_path;
-        INIT_LIST_HEAD(&new_refmon_path->list);
-        list_add_tail(&new_refmon_path->list, &reference_monitor.protected_paths);
+        // new_refmon_path->path = new_path;
+        // INIT_LIST_HEAD(&new_refmon_path->list);
+        // list_add_tail(&new_refmon_path->list, &reference_monitor.protected_paths);
 
         spin_unlock(&reference_monitor.lock);
         AUDIT
@@ -248,31 +251,32 @@ asmlinkage long sys_refmon_unprotect(char *passw, char *old_path){
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
         }
-        //TODO aggiungere caso di path non valido
-        // else if ()
-        // {
-        //         err_msg = "";
-        //         goto operation_failed;
+        // //TODO aggiungere caso di path non valido
+        // // else if ()
+        // // {
+        // //         err_msg = "";
+        // //         goto operation_failed;
+        // // }
+
+        // struct refmon_path *entry, *tmp;
+
+        // list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
+        //         if (entry->path == old_path) {
+        //                 list_del(&entry->list);
+        //                 kfree(entry);
+
+        //                 spin_unlock(&reference_monitor.lock);
+        //                 AUDIT
+        //                 pr_info("%s: Path '%s' will no longer be monitored\n", MODNAME, old_path);
+        //                 return 0;
+        //         }
         // }
 
-        struct refmon_path *entry, *tmp;
-
-        list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
-                if (entry->path == old_path) {
-                        list_del(&entry->list);
-                        kfree(entry);
-
-                        AUDIT
-                        pr_info("%s: Path '%s' will no longer be monitored\n", MODNAME, old_path);
-                        return 0;
-                }
-        }
-
-        AUDIT
-        pr_info("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, old_path);
+        // AUDIT
+        // pr_err("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, old_path);
 
         spin_unlock(&reference_monitor.lock);
-        return 0;
+        return -1;
 
 operation_failed:
         pr_err("%s: %s\n",MODNAME,err_msg);
@@ -313,7 +317,7 @@ int init_module(void) {
         }
         pr_info("%s: starting up\n",MODNAME);
         memcpy(reference_monitor.password_digest, digest, SHA256_DIGEST_SIZE);
-        memset(the_refmon_secret, 0, sizeof(the_refmon_secret));
+        // memset(the_refmon_secret, 0, sizeof(the_refmon_secret)); //TODO maybe unnecessary if permissions on param are 0
 
         //hack syscall table
         if (the_syscall_table == 0x0){
