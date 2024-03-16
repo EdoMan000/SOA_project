@@ -1,68 +1,47 @@
 #include "include/sha256_utils.h"
+#include <crypto/hash.h>
+#include <linux/slab.h> 
+#include <linux/err.h>
 
-struct sdesc {
-    struct shash_desc shash;
-    char ctx[];
-};
-
-static struct sdesc *init_sdesc(struct crypto_shash *alg)
+int compute_sha256(const unsigned char *data, unsigned int datalen, unsigned char *digest)
 {
-    struct sdesc *sdesc;
-    int size;
+    struct crypto_shash *alg;
+    struct shash_desc *shash;
+    int size, ret;
 
-    size = sizeof(struct shash_desc) + crypto_shash_descsize(alg);
-    sdesc = kmalloc(size, GFP_KERNEL);
-    if (!sdesc)
-        return ERR_PTR(-ENOMEM);
-    sdesc->shash.tfm = alg;
-    return sdesc;
-}
-
-static int calc_hash(struct crypto_shash *alg,
-             const unsigned char *data, unsigned int datalen,
-             unsigned char *digest)
-{
-    struct sdesc *sdesc;
-    int ret;
-
-    sdesc = init_sdesc(alg);
-    if (IS_ERR(sdesc)) {
-        return PTR_ERR(sdesc);
+    alg = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(alg)) {
+        pr_err("Error allocating SHA256 transform: %ld\n", PTR_ERR(alg));
+        return PTR_ERR(alg);
     }
-
-    ret = crypto_shash_digest(&sdesc->shash, data, datalen, digest);
-    kfree(sdesc);
+    
+    size = sizeof(struct shash_desc) + crypto_shash_descsize(alg);
+    shash = kmalloc(size, GFP_KERNEL);
+    if (!shash) {
+        crypto_free_shash(alg);
+        return -ENOMEM;
+    }
+    shash->tfm = alg;
+    ret = crypto_shash_digest(shash, data, datalen, digest);
+    kfree(shash);
+    crypto_free_shash(alg);
     return ret;
 }
 
-int do_sha256(const unsigned char *data, unsigned char *out_digest)
+int verify_password(const unsigned char *password, unsigned int passlen, const unsigned char *expected_hash)
 {
-    struct crypto_shash *alg;
-    char *hash_alg_name = "sha256";
-    unsigned int datalen = sizeof(data) - 1; 
+    unsigned char computed_hash[SHA256_DIGEST_SIZE];
+    int ret;
 
-    alg = crypto_alloc_shash(hash_alg_name, 0, 0);
-    if(IS_ERR(alg)){
-        return PTR_ERR(alg);
-    }
-    calc_hash(alg, data, datalen, out_digest);
-
-    crypto_free_shash(alg);
-    return 0;
-}
-
-int authenticate(const char *passw_to_check, const unsigned char *reference_digest)
-{
-    unsigned char passw_to_check_digest[SHA256_DIGEST_SIZE];
-    int sha_ret = do_sha256(passw_to_check, passw_to_check_digest);
-
-    if (sha_ret) {
-        return -1;
+    ret = compute_sha256(password, passlen, computed_hash);
+    if (ret) {
+        pr_err("SHA-256 computation failed\n");
+        return ret;
     }
 
-    if (memcmp(passw_to_check_digest, reference_digest, SHA256_DIGEST_SIZE) == 0) {
-        return 0;
+    if (memcmp(computed_hash, expected_hash, SHA256_DIGEST_SIZE) == 0) {
+        return 0; 
     } else {
-        return -1;
+        return -EINVAL; 
     }
 }

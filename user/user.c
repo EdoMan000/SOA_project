@@ -4,43 +4,36 @@
 #include <pthread.h>
 #include <unistd.h>
 
+int main(int argc, char** argv)
+{
+	char* passw = "Th15_I5_4_t3s7_p4s5W0rd";
+    char* path = "/home/manenti_0333574/Scaricati";
 
+	if (argc < 3) {
+        printf("Usage: %s <syscall_code> [optional]<param1> <param2> ...\n", argv[0]);
+        return 1;
+    }
+    int syscall_code = atoi(argv[1]);
 
-int call_the_syscall(long int x){
-	if(x == 174 || x == 177 ){
-		printf("calling syscall %d\n",x);
-		return syscall(x, "Th15_I5_4_t3s7_p4s5W0rd", "/home/manenti_0333574/Scaricati");
-	}
-	return syscall(x);
-}
-
-void* do_job(void * arg){
-	int res;
-	res = call_the_syscall((long int)arg);
-	printf("sys call %ld returned value %d\n",(long int)arg,res);
-	return NULL;
-}
-
-int main(int argc, char** argv){
-	
-	long int num_threads, arg;	
-	pthread_t tid;
-	int i;
-
-	if(argc < 3){
-		printf("usage: prog num-spawns sycall-num\n");
-		return EXIT_FAILURE;
-	}
-	
-	
-	num_threads = strtol(argv[1],NULL,10);
-	arg = strtol(argv[2],NULL,10);
-	
-
-	for (i=0; i<num_threads; i++){
-		pthread_create(&tid,NULL,do_job,(void*)arg);
-	}
-
-	pause();
-
+	switch (syscall_code) {
+        case 134:
+    		int state_code = atoi(argv[2]);
+			return syscall(syscall_code, state_code);
+            break;
+        case 174:
+			if (argc >= 3)
+				passw = argv[2];
+			if (argc >= 4)
+				path = argv[3];
+			return syscall(syscall_code, passw, path);
+        case 177:
+			if (argc >= 3)
+				passw = argv[2];
+			if (argc >= 4)
+				path = argv[3];
+			return syscall(syscall_code, passw, path);
+        default:
+            printf("Invalid syscall_code. No action performed.\n");
+            return -1;
+    }
 }

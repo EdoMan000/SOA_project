@@ -26,7 +26,7 @@ endef
 
 define insmod_module
 	@if [ "$1" = "reference-monitor" ]; then \
-		echo "Mounting reference-monitor module..." && { sudo insmod the_reference-monitor.ko the_syscall_table=$$(sudo cat /sys/module/the_usctm/parameters/sys_call_table_address) the_refmon_secret=$$(sudo echo "Th15_I5_4_t3s7_p4s5W0rd") > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,reference-monitor,mount); } \
+		echo "Mounting reference-monitor module..." && { sudo insmod the_reference-monitor.ko the_syscall_table=$$(sudo cat /sys/module/the_usctm/parameters/sys_call_table_address) the_refmon_secret=$$(sudo cat secret) > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,reference-monitor,mount); } \
 	else \
 		echo "Mounting usctm module..." && { cd usctm && sudo insmod the_usctm.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,usctm,mount); } \
 	fi
@@ -70,15 +70,23 @@ define set_parameter
 	fi
 endef
 
+define compile_user
+	@echo "Compiling user code..." && cd user && gcc user.c -o ../user.out && echo "user code compilation successful!";
+endef
 
+define clean_user
+	@echo "Cleaning user code..." && rm user.out && echo "user code cleaning successful!";
+endef
 
 all:
 	$(call build_module,usctm,usctm)
 	$(call build_module,.,reference-monitor)
+	$(call compile_user)
 
 clean:
 	$(call clean_module,usctm,usctm)
 	$(call clean_module,.,reference-monitor)
+	$(call clean_user)
 
 mount:
 	$(call insmod_module,usctm)
