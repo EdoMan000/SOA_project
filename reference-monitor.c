@@ -164,7 +164,6 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         pid_t curr_pid = current->pid;
         char *kern_passw = NULL;
         char *kern_new_path = NULL;
-        long retval = 0;
         char* err_msg;
         unsigned long passw_len, new_path_len;
 
@@ -193,13 +192,15 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         kern_new_path[new_path_len - 1] = '\0';
 
         pr_info("%s: sys_refmon_protect(%s, %s) called from thread %d\n", MODNAME, kern_passw, kern_new_path, curr_pid);
+        pr_info("%s: PASSWORD: '%s' | LEN '%d'\n",MODNAME, kern_passw, strlen(kern_passw));
+        print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
         spin_lock(&reference_monitor.lock);
         
         if(CURRENT_EUID != 0){
                 err_msg = "Current EUID is not 0";
                 goto operation_failed;
-        }else if (verify_password(kern_passw, passw_len, reference_monitor.password_digest)  != 0)
+        }else if (verify_password(kern_passw, strlen(kern_passw), reference_monitor.password_digest)  != 0)
         {
                 err_msg = "Authentication failed";
                 goto operation_failed;
@@ -227,7 +228,7 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
 
         spin_unlock(&reference_monitor.lock);
         AUDIT
-        pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, new_path);
+        pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, kern_new_path);
         kfree(kern_passw);
         kfree(kern_new_path);
         return 0;
@@ -245,20 +246,50 @@ __SYSCALL_DEFINEx(2, _refmon_unprotect, char __user *, passw, char __user *, old
 #else
 asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
 #endif
-	AUDIT
-        pr_info("%s: sys_refmon_unprotect(%s, %s) called from thread %d\n",MODNAME,passw,old_path,current->pid);
+        pid_t curr_pid = current->pid;
+        char *kern_passw = NULL;
+        char *kern_old_path = NULL;
+        char* err_msg;
+        unsigned long passw_len, old_path_len;
+
+	passw_len = strnlen_user(passw, PAGE_SIZE);
+        old_path_len = strnlen_user(old_path, PAGE_SIZE);
+
+        if (passw_len > PAGE_SIZE || old_path_len > PAGE_SIZE || passw_len == 0 || old_path_len == 0) {
+                return -EFAULT;
+        }
+
+        kern_passw = kmalloc(passw_len, GFP_KERNEL);
+        kern_old_path = kmalloc(old_path_len, GFP_KERNEL);
+        if (!kern_passw || !kern_old_path) {
+                kfree(kern_passw);
+                kfree(kern_old_path);
+                return -ENOMEM;
+        }
+
+        if (copy_from_user(kern_passw, passw, passw_len) != 0 || copy_from_user(kern_old_path, old_path, old_path_len) != 0) {
+                kfree(kern_passw);
+                kfree(kern_old_path);
+                return -ENOMEM;
+        }
+
+        kern_passw[passw_len - 1] = '\0';
+        kern_new_path[old_path_len - 1] = '\0';
+
+        pr_info("%s: sys_refmon_unprotect(%s, %s) called from thread %d\n", MODNAME, kern_passw, kern_old_path, curr_pid);
+        pr_info("%s: PASSWORD: '%s' | LEN '%d'\n",MODNAME, kern_passw, strlen(kern_passw));
+        print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
         spin_lock(&reference_monitor.lock);
         
-        char* err_msg;
         if(CURRENT_EUID != 0){
                 err_msg = "Current EUID is not 0";
                 goto operation_failed;
-        }else if (verify_password(passw, strlen(passw), reference_monitor.password_digest) != 0)
+        }else if (verify_password(kern_passw, strlen(kern_passw), reference_monitor.password_digest)  != 0)
         {
                 err_msg = "Authentication failed";
                 goto operation_failed;
-        }else if (enable_reconfiguration == 0)//TODO check atomic_read
+        }else if (enable_reconfiguration == 0) //TODO check atomic_read
         {
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
@@ -276,7 +307,8 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         //         if (entry->path == old_path) {
         //                 list_del(&entry->list);
         //                 kfree(entry);
-
+        //                 kfree(kern_passw);
+        //                 kfree(kern_old_path);
         //                 spin_unlock(&reference_monitor.lock);
         //                 AUDIT
         //                 pr_info("%s: Path '%s' will no longer be monitored\n", MODNAME, old_path);
@@ -286,14 +318,16 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
 
         // AUDIT
         // pr_err("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, old_path);
-
+        kfree(kern_passw);
+        kfree(kern_old_path);
         spin_unlock(&reference_monitor.lock);
         return -1;
 
 operation_failed:
-        pr_err("%s: %s\n",MODNAME,err_msg);
-
+        kfree(kern_passw);
+        kfree(kern_old_path);
         spin_unlock(&reference_monitor.lock);
+        pr_err("%s: %s\n",MODNAME,err_msg);
         return -1;
 }
 
@@ -331,6 +365,8 @@ int init_module(void) {
                 return sha_ret;
         }
         pr_info("%s: starting up\n",MODNAME);
+        pr_info("%s: PASSWORD: '%s' | LEN '%d'\n", MODNAME, the_refmon_secret, strlen(the_refmon_secret));
+        print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
         //hack syscall table
         if (the_syscall_table == 0x0){
