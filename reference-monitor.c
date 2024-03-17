@@ -30,6 +30,8 @@
 #include <linux/mm.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/list.h> 
+#include <linux/namei.h> 
 #include <linux/version.h>
 #include <linux/interrupt.h>
 #include <linux/time.h>
@@ -57,7 +59,7 @@ MODULE_DESCRIPTION("reference monitor");
 // #define MAX_PASSW_LEN 32
 
 typedef struct _refmon_path {
-    char *path;
+    struct path actual_path;
     struct list_head list;
 } refmon_path;
 
@@ -99,9 +101,6 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 static int enable_reconfiguration = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
 module_param(enable_reconfiguration,int,0660);
 
-// char the_refmon_secret[MAX_PASSW_LEN];
-// memset(the_refmon_secret, 0, sizeof(the_refmon_secret));
-// module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
 static unsigned char the_refmon_secret[32]; // +1 for null terminator
 module_param_string(the_refmon_secret, the_refmon_secret, 32, 0);
 
@@ -166,6 +165,8 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         char *kern_new_path = NULL;
         char* err_msg;
         unsigned long passw_len, new_path_len;
+        struct path path_obj;
+        struct refmon_path *new_refmon_path;
 
         passw_len = strnlen_user(passw, PAGE_SIZE);
         new_path_len = strnlen_user(new_path, PAGE_SIZE);
@@ -192,8 +193,8 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         kern_new_path[new_path_len - 1] = '\0';
 
         pr_info("%s: sys_refmon_protect(%s, %s) called from thread %d\n", MODNAME, kern_passw, kern_new_path, curr_pid);
-        pr_info("%s: PASSWORD: '%s' | LEN '%d'\n",MODNAME, kern_passw, strlen(kern_passw));
-        print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
+        // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
+        // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
         spin_lock(&reference_monitor.lock);
         
@@ -209,28 +210,24 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
         }
-        // //TODO aggiungere caso di path non valido
-        // // else if ()
-        // // {
-        // //         err_msg = "";
-        // //         goto operation_failed;
-        // // }
-        
-        // struct refmon_path *new_refmon_path = kmalloc(sizeof(struct refmon_path), GFP_KERNEL);
-        // if (!new_refmon_path) {
-        //         pr_err("%s: Memory allocation failed for new refmon_path\n",MODNAME);
-        //         return -1;
-        // }
-        
-        // new_refmon_path->path = new_path;
-        // INIT_LIST_HEAD(&new_refmon_path->list);
-        // list_add_tail(&new_refmon_path->list, &reference_monitor.protected_paths);
-
-        spin_unlock(&reference_monitor.lock);
+        new_refmon_path = kmalloc(sizeof(*new_refmon_path), GFP_KERNEL);
+        if (!new_refmon_path) {
+                err_msg = "Couldn't allocate memory for new refmon path";
+                goto operation_failed;
+        }
+        if (kern_path(kern_new_path, LOOKUP_FOLLOW, &new_refmon_path->actual_path)) 
+        {
+                err_msg = "Invalid path was given";
+                kfree(new_refmon_path);
+                goto operation_failed;
+        }
+        list_add(&new_refmon_path->list, &reference_monitor.protected_paths);
         AUDIT
         pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, kern_new_path);
+
         kfree(kern_passw);
         kfree(kern_new_path);
+        spin_unlock(&reference_monitor.lock);
         return 0;
 
 operation_failed:
@@ -251,6 +248,8 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         char *kern_old_path = NULL;
         char* err_msg;
         unsigned long passw_len, old_path_len;
+        struct path path_obj;
+        struct refmon_path *entry, *tmp;
 
 	passw_len = strnlen_user(passw, PAGE_SIZE);
         old_path_len = strnlen_user(old_path, PAGE_SIZE);
@@ -274,11 +273,11 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         }
 
         kern_passw[passw_len - 1] = '\0';
-        kern_new_path[old_path_len - 1] = '\0';
+        kern_old_path[old_path_len - 1] = '\0';
 
         pr_info("%s: sys_refmon_unprotect(%s, %s) called from thread %d\n", MODNAME, kern_passw, kern_old_path, curr_pid);
-        pr_info("%s: PASSWORD: '%s' | LEN '%d'\n",MODNAME, kern_passw, strlen(kern_passw));
-        print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
+        // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
+        // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
         spin_lock(&reference_monitor.lock);
         
@@ -293,35 +292,33 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         {
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
+        }else if (kern_path(kern_old_path, LOOKUP_FOLLOW, &path_obj))
+        {
+                err_msg = "Invalid path was given";
+                goto operation_failed;
         }
-        // //TODO aggiungere caso di path non valido
-        // // else if ()
-        // // {
-        // //         err_msg = "";
-        // //         goto operation_failed;
-        // // }
 
-        // struct refmon_path *entry, *tmp;
+        list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
+                if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
+                        list_del(&entry->list);
+                        path_put(&entry->actual_path); 
+                        AUDIT
+                        pr_err("%s: Path '%s' won't be protected anymore\n", MODNAME, kern_old_path);
+                        kfree(entry);
+                        kfree(kern_passw);
+                        kfree(kern_old_path);
+                        spin_unlock(&reference_monitor.lock);
+                        return 0;
+                }
+        }
 
-        // list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
-        //         if (entry->path == old_path) {
-        //                 list_del(&entry->list);
-        //                 kfree(entry);
-        //                 kfree(kern_passw);
-        //                 kfree(kern_old_path);
-        //                 spin_unlock(&reference_monitor.lock);
-        //                 AUDIT
-        //                 pr_info("%s: Path '%s' will no longer be monitored\n", MODNAME, old_path);
-        //                 return 0;
-        //         }
-        // }
-
-        // AUDIT
-        // pr_err("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, old_path);
+        AUDIT
+        pr_err("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, kern_old_path);
         kfree(kern_passw);
         kfree(kern_old_path);
+        path_put(&path_obj);
         spin_unlock(&reference_monitor.lock);
-        return -1;
+        return -ENOENT;
 
 operation_failed:
         kfree(kern_passw);
@@ -345,11 +342,8 @@ int init_module(void) {
         AUDIT
         pr_info("%s: starting up\n",MODNAME);
 
-        //TODO vedere se necessario controllo sulla lunghezza eccessiva
-        if (the_refmon_secret == NULL){ 
-                pr_err("%s: must insert a non-empty secret\n",MODNAME);
-                return -1;
-        }
+        //TODO vedere se necessario controllo sulla lunghezza eccessiva di the_refmon_secret
+
         //init reference monitor struct
         reference_monitor.state = ON; //scegliere se mettere off e spostare il settaggio delle kprobes
         spin_lock_init(&reference_monitor.lock);
