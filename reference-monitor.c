@@ -161,16 +161,45 @@ __SYSCALL_DEFINEx(2, _refmon_protect, char __user *, passw, char __user *, new_p
 #else
 asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
 #endif
-	AUDIT
-        pr_info("%s: sys_refmon_protect(%s, %s) called from thread %d\n",MODNAME,passw,new_path,current->pid);
+        pid_t curr_pid = current->pid;
+        char *kern_passw = NULL;
+        char *kern_new_path = NULL;
+        long retval = 0;
+        char* err_msg;
+        unsigned long passw_len, new_path_len;
+
+        passw_len = strnlen_user(passw, PAGE_SIZE);
+        new_path_len = strnlen_user(new_path, PAGE_SIZE);
+
+        if (passw_len > PAGE_SIZE || new_path_len > PAGE_SIZE || passw_len == 0 || new_path_len == 0) {
+                return -EFAULT;
+        }
+
+        kern_passw = kmalloc(passw_len, GFP_KERNEL);
+        kern_new_path = kmalloc(new_path_len, GFP_KERNEL);
+        if (!kern_passw || !kern_new_path) {
+                kfree(kern_passw);
+                kfree(kern_new_path);
+                return -ENOMEM;
+        }
+
+        if (copy_from_user(kern_passw, passw, passw_len) != 0 || copy_from_user(kern_new_path, new_path, new_path_len) != 0) {
+                kfree(kern_passw);
+                kfree(kern_new_path);
+                return -ENOMEM;
+        }
+
+        kern_passw[passw_len - 1] = '\0';
+        kern_new_path[new_path_len - 1] = '\0';
+
+        pr_info("%s: sys_refmon_protect(%s, %s) called from thread %d\n", MODNAME, kern_passw, kern_new_path, curr_pid);
 
         spin_lock(&reference_monitor.lock);
         
-        char* err_msg;
         if(CURRENT_EUID != 0){
                 err_msg = "Current EUID is not 0";
                 goto operation_failed;
-        }else if (verify_password(passw, strlen(passw), reference_monitor.password_digest)  != 0)
+        }else if (verify_password(kern_passw, passw_len, reference_monitor.password_digest)  != 0)
         {
                 err_msg = "Authentication failed";
                 goto operation_failed;
@@ -199,10 +228,13 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         spin_unlock(&reference_monitor.lock);
         AUDIT
         pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, new_path);
-
+        kfree(kern_passw);
+        kfree(kern_new_path);
         return 0;
 
 operation_failed:
+        kfree(kern_passw);
+        kfree(kern_new_path);
         spin_unlock(&reference_monitor.lock);
         pr_err("%s: %s\n",MODNAME,err_msg);
         return -1;
@@ -288,7 +320,11 @@ int init_module(void) {
         reference_monitor.state = ON; //scegliere se mettere off e spostare il settaggio delle kprobes
         spin_lock_init(&reference_monitor.lock);
         INIT_LIST_HEAD(&reference_monitor.protected_paths);
-        reference_monitor.password_digest = kmalloc( 32, GFP_KERNEL);
+        reference_monitor.password_digest = kmalloc(32, GFP_KERNEL);
+        if(!reference_monitor.password_digest){
+                pr_err("%s: memory allocation failed for storing password digest\n",MODNAME);
+                return -ENOMEM;
+        }
         int sha_ret = compute_sha256(the_refmon_secret, strlen(the_refmon_secret), reference_monitor.password_digest);
         if (sha_ret){
                 pr_err("%s: password encryption failed\n",MODNAME);

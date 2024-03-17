@@ -14,7 +14,6 @@ int compute_sha256(const unsigned char *data, unsigned int datalen, unsigned cha
         pr_err("Error allocating SHA256 transform: %ld\n", PTR_ERR(alg));
         return PTR_ERR(alg);
     }
-    
     size = sizeof(struct shash_desc) + crypto_shash_descsize(alg);
     shash = kmalloc(size, GFP_KERNEL);
     if (!shash) {
@@ -30,18 +29,26 @@ int compute_sha256(const unsigned char *data, unsigned int datalen, unsigned cha
 
 int verify_password(const unsigned char *password, unsigned int passlen, const unsigned char *expected_hash)
 {
-    unsigned char computed_hash[SHA256_DIGEST_SIZE];
     int ret;
+
+    unsigned char *computed_hash = kmalloc(32, GFP_KERNEL);
+    if(!computed_hash){
+        pr_err("Couldn't allocate memory to store computed hash\n");
+        return -ENOMEM;
+    }
 
     ret = compute_sha256(password, passlen, computed_hash);
     if (ret) {
         pr_err("SHA-256 computation failed\n");
+        kfree(computed_hash);
         return ret;
     }
 
     if (memcmp(computed_hash, expected_hash, SHA256_DIGEST_SIZE) == 0) {
+        kfree(computed_hash);
         return 0; 
     } else {
+        kfree(computed_hash);
         return -EINVAL; 
     }
 }
