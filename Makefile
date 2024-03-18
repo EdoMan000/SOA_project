@@ -37,7 +37,7 @@ define rmmod_module
 endef
 
 define check_reconfigurability
-	@sudo bash -c 'rec="$$(cat /sys/module/the_reference_monitor/parameters/enable_reconfiguration 2>/dev/null)"; \
+	@sudo bash -c 'rec="$$(cat /sys/module/the_reference_monitor/parameters/the_refmon_reconf 2>/dev/null)"; \
               if [ "$$rec" -eq 1 ]; then \
                   echo "The reference monitor is currently reconfigurable."; \
               elif [ "$$rec" -eq 0 ]; then \
@@ -49,10 +49,10 @@ define check_reconfigurability
 endef
 
 define set_parameter
-	@rec="$$(sudo bash -c 'cat /sys/module/the_reference_monitor/parameters/enable_reconfiguration 2>/dev/null || echo "error"')"; \
+	@rec="$$(sudo bash -c 'cat /sys/module/the_reference_monitor/parameters/the_refmon_reconf 2>/dev/null || echo "error"')"; \
 	if [ "$$rec" != "error" ]; then \
 		if [ "$$rec" -ne $(2) ]; then \
-			sudo bash -c 'echo "$(2)" > /sys/module/the_reference_monitor/parameters/enable_reconfiguration'; \
+			sudo bash -c 'echo "$(2)" > /sys/module/the_reference_monitor/parameters/the_refmon_reconf'; \
 			if [ "$(2)" = "1" ]; then \
 				echo "The reference monitor can now be reconfigured"; \
 			else \
@@ -100,8 +100,8 @@ check:
 	$(call check_reconfigurability)
 
 enable:
-	$(call set_parameter,enable_reconfiguration,1)
+	$(call set_parameter,the_refmon_reconf,1)
 
 disable:
-	$(call set_parameter,enable_reconfiguration,0)
+	$(call set_parameter,the_refmon_reconf,0)
 

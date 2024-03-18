@@ -54,9 +54,24 @@ MODULE_DESCRIPTION("reference monitor");
 
 //===================================
 #define CURRENT_EUID current->cred->euid.val
+#define RECONF_ENABLED 1
+#define RECONF_DISABLED 0
 // #define MAX_PATH_LEN 256
 // #define MAX_PROGRAM_PATH_LEN 256
 // #define MAX_PASSW_LEN 32
+
+enum refmon_ops {
+    REFMON_SET_OFF = 0,
+    REFMON_SET_ON = 1,
+    REFMON_SET_REC_OFF = 2,
+    REFMON_SET_REC_ON = 3,
+    REFMON_STATE_QUERY = 4
+};
+
+typedef enum state {
+    ON,
+    OFF
+} state_t;
 
 typedef struct _refmon_path {
     struct path actual_path;
@@ -64,10 +79,7 @@ typedef struct _refmon_path {
 } refmon_path;
 
 typedef struct _refmon {
-    enum {
-        ON,
-        OFF
-    } state;
+    state_t state;
     spinlock_t lock;
     char *password_digest;  
     struct list_head protected_paths;           
@@ -98,20 +110,113 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
 #define AUDIT if(1)
 
-static int enable_reconfiguration = 0;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
-module_param(enable_reconfiguration,int,0660);
+static int the_refmon_reconf = RECONF_DISABLED;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
+module_param(the_refmon_reconf,int,0660);
 
 static unsigned char the_refmon_secret[32]; // +1 for null terminator
 module_param_string(the_refmon_secret, the_refmon_secret, 32, 0);
 
+static const char* state_to_string(state_t state, int opposite) {
+    switch (state) {
+        case ON:
+                if(opposite){
+                        return "OFF";
+                }else{
+                        return "ON";
+                }
+        case OFF:
+                if(opposite){
+                        return "ON";
+                }else{
+                        return "OFF";
+                }
+        default:
+                return "Unknown State";
+    }
+}
+
+static void update_state(state_t new_state, int reconf){
+        const char *state_str = state_to_string(new_state, 0);
+        const char *opposite_state_str = state_to_string(new_state, 1);
+        if(reference_monitor.state == new_state && the_refmon_reconf == reconf){
+                if(reconf != RECONF_ENABLED){
+                        pr_info("%s: The reference monitor was already %s. Nothing done.\n",MODNAME, state_str);
+                }else{
+                        pr_info("%s: The reference monitor was already REC-%s. Nothing done.\n",MODNAME, state_str);
+                }
+        }else{
+                if (reference_monitor.state != new_state) {
+                        //TODO: operation on kprobes (depending on new_state OFF->disattiva ON->attiva)
+                        reference_monitor.state = new_state;
+                        if (the_refmon_reconf != reconf) {
+                                the_refmon_reconf = reconf;
+                                if(reconf != RECONF_ENABLED){
+                                        pr_info("%s: The reference monitor was REC-%s. It is now %s.\n", MODNAME, opposite_state_str, state_str);
+                                }else{
+                                        pr_info("%s: The reference monitor was %s. It is now REC-%s.\n", MODNAME, opposite_state_str, state_str);
+                                }
+                        } else {
+                                if(reconf != RECONF_ENABLED){
+                                        pr_info("%s: The reference monitor was %s. It is now %s.\n", MODNAME, opposite_state_str, state_str);
+                                }else{
+                                        pr_info("%s: The reference monitor was REC-%s. It is now REC-%s.\n", MODNAME, opposite_state_str, state_str);
+                                }
+                        }
+                } else {
+                        the_refmon_reconf = reconf;
+                        pr_info("%s: The reference monitor was REC-%s. It is now %s.\n", MODNAME, state_str, state_str);
+                }
+        }
+}
+
+static void print_current_refmon_state(void){
+        char *buf;
+        char *pathname;
+        struct path path;
+        if (the_refmon_reconf != 1) {
+                if (reference_monitor.state == ON) {
+                        pr_info("%s: Current state is ON.\n", MODNAME);
+                } else {
+                        pr_info("%s: Current state is OFF.\n", MODNAME);
+                }
+        } else {
+                if (reference_monitor.state == ON) {
+                        pr_info("%s: Current state is REC-ON.\n", MODNAME);
+                } else {
+                        pr_info("%s: Current state is REC-OFF.\n", MODNAME);
+                }
+        }
+        if (list_empty(&reference_monitor.protected_paths)) {
+                pr_info("%s: Currently there are no protected paths.\n", MODNAME);
+        } else {
+                pr_info("%s: Listing all protected paths:\n", MODNAME);
+                refmon_path *entry;
+                list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+                        path = entry->actual_path;
+                        buf = (char *)__get_free_page(GFP_KERNEL);
+                        if (!buf) {
+                                pr_err("%s: Failed to allocate memory for path buffer\n", MODNAME);
+                                break;
+                        }
+                        pathname = d_path(&path, buf, PAGE_SIZE);
+                        if (IS_ERR(pathname)) {
+                                pr_err("%s: Error converting path to string\n", MODNAME);
+                        } else {
+                                pr_info("%s: Protected path: %s\n", MODNAME, pathname);
+                        }
+                        free_page((unsigned long)buf);
+                }
+        }
+
+}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _refmon_toggle, int, code){
+__SYSCALL_DEFINEx(1, _refmon_manage, int, code){
 #else
-asmlinkage long sys_refmon_toggle(int code){
+asmlinkage long sys_refmon_manage(int code){
 #endif
         AUDIT
-        pr_info("%s: sys_refmon_toggle called from thread %d\n",MODNAME,current->pid);
+        pr_info("%s: sys_refmon_manage called from thread %d\n",MODNAME,current->pid);
 
         spin_lock_irq(&reference_monitor.lock);
 
@@ -122,37 +227,28 @@ asmlinkage long sys_refmon_toggle(int code){
         }
         switch (code)
         {
-        case 0:
-                if(reference_monitor.state != OFF){
-                        //TODO disattiva kprobes
-                        reference_monitor.state = OFF;
-                        AUDIT
-                        pr_info("%s: The reference monitor was turned OFF.\n",MODNAME);
-                }else{
-                        AUDIT
-                        pr_info("%s: The reference monitor was already turned OFF. Nothing done.\n",MODNAME);
-                }
+        case REFMON_SET_OFF:
+                update_state(OFF, 0);
                 break;
-        case 1:
-                if(reference_monitor.state != ON){
-                        //TODO attiva kprobes
-                        reference_monitor.state = ON;
-                        AUDIT
-                        pr_info("%s: The reference monitor was turned ON.\n",MODNAME);
-                }else{
-                        AUDIT
-                        pr_info("%s: The reference monitor was already turned ON. Nothing done.\n",MODNAME);
-                }
+        case REFMON_SET_ON:
+                update_state(ON, 0);
+                break;
+        case REFMON_SET_REC_OFF:
+                update_state(OFF, 1);
+                break;
+        case REFMON_SET_REC_ON:
+                update_state(ON, 1);
+                break;
+        case REFMON_STATE_QUERY:
+                print_current_refmon_state();
                 break;
         default:
-                AUDIT
-                pr_err("%s: Unrecognised state code, failed to update state.\n",MODNAME);
+                pr_err("%s: Provided code is unknown.\n",MODNAME);
                 spin_unlock_irq(&reference_monitor.lock);
-                return -1;
+                return -EINVAL;
         }
         spin_unlock_irq(&reference_monitor.lock);
         return 0;
-
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
@@ -165,7 +261,6 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         char *kern_new_path = NULL;
         char* err_msg;
         unsigned long passw_len, new_path_len;
-        struct path path_obj;
         refmon_path *new_refmon_path;
 
         passw_len = strnlen_user(passw, PAGE_SIZE);
@@ -205,7 +300,7 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         {
                 err_msg = "Authentication failed";
                 goto operation_failed;
-        }else if (enable_reconfiguration == 0) //TODO check atomic_read
+        }else if (the_refmon_reconf != 1) //TODO check atomic_read
         {
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
@@ -288,7 +383,7 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         {
                 err_msg = "Authentication failed";
                 goto operation_failed;
-        }else if (enable_reconfiguration == 0) //TODO check atomic_read
+        }else if (the_refmon_reconf != 1) //TODO check atomic_read
         {
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
@@ -330,7 +425,7 @@ operation_failed:
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-long sys_refmon_toggle = (unsigned long) __x64_sys_refmon_toggle;
+long sys_refmon_manage = (unsigned long) __x64_sys_refmon_manage;
 long sys_refmon_protect = (unsigned long) __x64_sys_refmon_protect;
 long sys_refmon_unprotect = (unsigned long) __x64_sys_refmon_unprotect;
 #else
@@ -371,7 +466,7 @@ int init_module(void) {
            pr_info("%s: received sys_call_table address %px\n",MODNAME,(void*)the_syscall_table);
            pr_info("%s: initializing - hacked entries %d\n",MODNAME,HACKED_ENTRIES);
         }
-        new_sys_call_array[0] = (unsigned long)sys_refmon_toggle;
+        new_sys_call_array[0] = (unsigned long)sys_refmon_manage;
         new_sys_call_array[1] = (unsigned long)sys_refmon_protect;
         new_sys_call_array[2] = (unsigned long)sys_refmon_unprotect;
         ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
