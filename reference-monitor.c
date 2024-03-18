@@ -113,11 +113,11 @@ asmlinkage long sys_refmon_toggle(int code){
         AUDIT
         pr_info("%s: sys_refmon_toggle called from thread %d\n",MODNAME,current->pid);
 
-        spin_lock(&reference_monitor.lock);
+        spin_lock_irq(&reference_monitor.lock);
 
         if(CURRENT_EUID != 0){
                 pr_err("%s: Current EUID is not 0\n", MODNAME);
-                spin_unlock(&reference_monitor.lock);
+                spin_unlock_irq(&reference_monitor.lock);
                 return -1;
         }
         switch (code)
@@ -147,10 +147,10 @@ asmlinkage long sys_refmon_toggle(int code){
         default:
                 AUDIT
                 pr_err("%s: Unrecognised state code, failed to update state.\n",MODNAME);
-                spin_unlock(&reference_monitor.lock);
+                spin_unlock_irq(&reference_monitor.lock);
                 return -1;
         }
-        spin_unlock(&reference_monitor.lock);
+        spin_unlock_irq(&reference_monitor.lock);
         return 0;
 
 }
@@ -166,7 +166,7 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         char* err_msg;
         unsigned long passw_len, new_path_len;
         struct path path_obj;
-        struct refmon_path *new_refmon_path;
+        refmon_path *new_refmon_path;
 
         passw_len = strnlen_user(passw, PAGE_SIZE);
         new_path_len = strnlen_user(new_path, PAGE_SIZE);
@@ -196,7 +196,7 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
         // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
-        spin_lock(&reference_monitor.lock);
+        spin_lock_irq(&reference_monitor.lock);
         
         if(CURRENT_EUID != 0){
                 err_msg = "Current EUID is not 0";
@@ -227,13 +227,13 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
 
         kfree(kern_passw);
         kfree(kern_new_path);
-        spin_unlock(&reference_monitor.lock);
+        spin_unlock_irq(&reference_monitor.lock);
         return 0;
 
 operation_failed:
         kfree(kern_passw);
         kfree(kern_new_path);
-        spin_unlock(&reference_monitor.lock);
+        spin_unlock_irq(&reference_monitor.lock);
         pr_err("%s: %s\n",MODNAME,err_msg);
         return -1;
 }
@@ -249,7 +249,7 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         char* err_msg;
         unsigned long passw_len, old_path_len;
         struct path path_obj;
-        struct refmon_path *entry, *tmp;
+        refmon_path *entry, *tmp;
 
 	passw_len = strnlen_user(passw, PAGE_SIZE);
         old_path_len = strnlen_user(old_path, PAGE_SIZE);
@@ -279,7 +279,7 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
         // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
-        spin_lock(&reference_monitor.lock);
+        spin_lock_irq(&reference_monitor.lock);
         
         if(CURRENT_EUID != 0){
                 err_msg = "Current EUID is not 0";
@@ -303,11 +303,11 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
                         list_del(&entry->list);
                         path_put(&entry->actual_path); 
                         AUDIT
-                        pr_err("%s: Path '%s' won't be protected anymore\n", MODNAME, kern_old_path);
+                        pr_info("%s: Path '%s' won't be protected anymore\n", MODNAME, kern_old_path);
                         kfree(entry);
                         kfree(kern_passw);
                         kfree(kern_old_path);
-                        spin_unlock(&reference_monitor.lock);
+                        spin_unlock_irq(&reference_monitor.lock);
                         return 0;
                 }
         }
@@ -317,13 +317,13 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         kfree(kern_passw);
         kfree(kern_old_path);
         path_put(&path_obj);
-        spin_unlock(&reference_monitor.lock);
+        spin_unlock_irq(&reference_monitor.lock);
         return -ENOENT;
 
 operation_failed:
         kfree(kern_passw);
         kfree(kern_old_path);
-        spin_unlock(&reference_monitor.lock);
+        spin_unlock_irq(&reference_monitor.lock);
         pr_err("%s: %s\n",MODNAME,err_msg);
         return -1;
 }
@@ -359,8 +359,8 @@ int init_module(void) {
                 return sha_ret;
         }
         pr_info("%s: starting up\n",MODNAME);
-        pr_info("%s: PASSWORD: '%s' | LEN '%d'\n", MODNAME, the_refmon_secret, strlen(the_refmon_secret));
-        print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
+        // pr_info("%s: PASSWORD: '%s' | LEN '%d'\n", MODNAME, the_refmon_secret, strlen(the_refmon_secret));
+        // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
         //hack syscall table
         if (the_syscall_table == 0x0){
