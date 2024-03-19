@@ -118,84 +118,137 @@ module_param_string(the_refmon_secret, the_refmon_secret, 32, 0);
 
 //==================================
 
-struct open_flags {
-        int open_flag;
-        umode_t mode;
-        int acc_mode;
-        int intent;
-        int lookup_flags;
-};
-
-// struct filename {
-// 	const char		*name;	/* pointer to actual string */
-// 	const __user char	*uptr;	/* original userland pointer */
-// 	int			refcnt;
-// 	struct audit_names	*aname;
-// 	const char		iname[];
+// struct open_flags {
+//         int open_flag;
+//         umode_t mode;
+//         int acc_mode;
+//         int intent;
+//         int lookup_flags;
 // };
 
-// struct file *do_filp_open(int dfd, struct filename *pathname,
-// 		const struct open_flags *op)
-// {
-// 	struct nameidata nd;
-// 	int flags = op->lookup_flags;
-// 	struct file *filp;
+// // struct filename {
+// // 	const char		*name;	/* pointer to actual string */
+// // 	const __user char	*uptr;	/* original userland pointer */
+// // 	int			refcnt;
+// // 	struct audit_names	*aname;
+// // 	const char		iname[];
+// // };
 
-// 	set_nameidata(&nd, dfd, pathname, NULL);
-// 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
-// 	if (unlikely(filp == ERR_PTR(-ECHILD)))
-// 		filp = path_openat(&nd, op, flags);
-// 	if (unlikely(filp == ERR_PTR(-ESTALE)))
-// 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
-// 	restore_nameidata();
-// 	return filp;
+// // struct file *do_filp_open(int dfd, struct filename *pathname,
+// // 		const struct open_flags *op)
+// // {
+// // 	struct nameidata nd;
+// // 	int flags = op->lookup_flags;
+// // 	struct file *filp;
+
+// // 	set_nameidata(&nd, dfd, pathname, NULL);
+// // 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
+// // 	if (unlikely(filp == ERR_PTR(-ECHILD)))
+// // 		filp = path_openat(&nd, op, flags);
+// // 	if (unlikely(filp == ERR_PTR(-ESTALE)))
+// // 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
+// // 	restore_nameidata();
+// // 	return filp;
+// // }
+
+// static int pre_handler_do_filp_open(struct kprobe *p, struct pt_regs *regs) {
+//         struct filename *pathname = (struct filename *)regs->si;
+//         struct open_flags *op = (struct open_flags *)regs->dx;
+//         struct path path_obj;
+//         refmon_path *entry;
+
+//         if (op && (op->open_flag & (O_WRONLY | O_RDWR))) {
+//                 if (kern_path(pathname->name, LOOKUP_FOLLOW, &path_obj) == 0) {
+//                         spin_lock(&reference_monitor.lock);
+//                         list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+//                                 if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
+//                                         pr_err("%s: File '%s' ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", MODNAME, pathname->name);
+//                                         op->open_flag &= ~(O_WRONLY | O_RDWR);
+//                                         op->open_flag |= O_RDONLY;
+//                                 }
+//                         }
+//                         spin_unlock(&reference_monitor.lock);
+//                         path_put(&path_obj);
+//                 }
+//         }
+
+//         return 0; 
 // }
 
-static int pre_handler_do_filp_open(struct kprobe *p, struct pt_regs *regs) {
-        struct filename *pathname = (struct filename *)regs->si;
-        struct open_flags *op = (struct open_flags *)regs->dx;
-        struct path path_obj;
-        refmon_path *entry;
+// static struct kprobe kp = {
+//     .symbol_name    = "do_filp_open",
+//     .pre_handler    = pre_handler_do_filp_open,
+// };
 
-        // Check if the file is being opened in write mode
-        if (op && (op->open_flag & (O_WRONLY | O_RDWR))) {
-                // Resolve the path to check against protected paths
-                if (kern_path(pathname->name, LOOKUP_FOLLOW, &path_obj) == 0) {
-                        spin_lock_irq(&reference_monitor.lock);
+struct kretprobe_data {
+	struct file * file;
+};
+
+static int entry_handler_security_file_open(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct kretprobe_data *data;
+
+	if (!current->mm)
+		return 1;	/* Skip kernel threads */
+
+	data = (struct kretprobe_data *)ri->data;
+	data->file = (struct file *)regs->di;
+	return 0;
+}
+
+static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct kretprobe_data *data = (struct kretprobe_data *)ri->data;
+        struct file* file = data->file;
+
+        if (file) {
+                if (file->f_mode & FMODE_WRITE) {
+                        refmon_path *entry;
+                        struct path file_path = file->f_path;
+                        char *file_path_buff = kmalloc(PATH_MAX, GFP_KERNEL);
+                        if (!file_path_buff) {
+                                pr_err("%s: FAILED TO BLOCK ILLEGAL ACCESS! Couldn't allocate buffer to store pathname.\n", MODNAME, file_path);
+                                return -ENOMEM;
+                        }
+                        char *pathname = d_path(&file_path, file_path_buff, PATH_MAX);
+                        spin_lock(&reference_monitor.lock);
                         list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
-                                if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
-                                        pr_err("%s: File '%s' ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", MODNAME, pathname->name);
-                                        op->open_flag &= ~(O_WRONLY | O_RDWR);
-                                        op->open_flag |= O_RDONLY;
+                                if (file_path.dentry == entry->actual_path.dentry && file_path.mnt == entry->actual_path.mnt) {
+                                        pr_warn("%s: File '%s' ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", MODNAME, pathname);
+                                        spin_unlock(&reference_monitor.lock);
+                                        kfree(file_path_buff);
+                                        return -EACCES;
                                 }
                         }
-                        spin_unlock_irq(&reference_monitor.lock);
-                        path_put(&path_obj);
+                        spin_unlock(&reference_monitor.lock);
+                        kfree(file_path_buff);
                 }
         }
 
-        return 0; // Return 0 to proceed with the original function execution
+        return 0; 
 }
 
-static struct kprobe kp = {
-    .symbol_name    = "do_filp_open",
-    .pre_handler    = pre_handler_do_filp_open,
+
+static struct kretprobe krp = {
+        .kp.symbol_name     = "security_file_open",
+        .handler            = handler_security_file_open,
+        .entry_handler      = entry_handler_security_file_open,
+        .data_size          = sizeof(struct kretprobe_data),
 };
 
-int register_my_kprobe(void) {
+int register_my_kretprobe(void) {
     int ret;
-    ret = register_kprobe(&kp);
+    ret = register_kretprobe(&krp);
     if (ret < 0) {
-        pr_err("%s: Failed to register kprobe: %d\n", MODNAME,  ret);
+        pr_err("%s: Failed to register kretprobe: %d\n", MODNAME,  ret);
         return ret;
     }
     pr_info("%s: Kprobe registered\n", MODNAME);
     return 0;
 }
 
-void unregister_my_kprobe(void) {
-    unregister_kprobe(&kp);
-    pr_info("%s: Kprobe unregistered\n", MODNAME);
+void unregister_my_kretprobe(void) {
+    unregister_kretprobe(&krp);
+    pr_info("%s: kretprobe unregistered\n", MODNAME);
 }
 
 //==================================
@@ -231,9 +284,9 @@ static void update_state(state_t new_state, int reconf){
         }else{
                 if (reference_monitor.state != new_state) {
                         if(new_state == ON){
-                                register_my_kprobe();
+                                register_my_kretprobe();
                         }else{
-                                unregister_my_kprobe();
+                                unregister_my_kretprobe();
                         }
                         reference_monitor.state = new_state;
                         if (the_refmon_reconf != reconf) {
@@ -306,11 +359,11 @@ asmlinkage long sys_refmon_manage(int code){
         AUDIT
         pr_info("%s: sys_refmon_manage called from thread %d\n",MODNAME,current->pid);
 
-        spin_lock_irq(&reference_monitor.lock);
+        spin_lock(&reference_monitor.lock);
 
         if(CURRENT_EUID != 0){
                 pr_err("%s: Current EUID is not 0\n", MODNAME);
-                spin_unlock_irq(&reference_monitor.lock);
+                spin_unlock(&reference_monitor.lock);
                 return -1;
         }
         switch (code)
@@ -332,10 +385,10 @@ asmlinkage long sys_refmon_manage(int code){
                         break;
                 default:
                         pr_err("%s: Provided code is unknown.\n",MODNAME);
-                        spin_unlock_irq(&reference_monitor.lock);
+                        spin_unlock(&reference_monitor.lock);
                         return -EINVAL;
         }
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_unlock(&reference_monitor.lock);
         return 0;
 }
 
@@ -379,7 +432,7 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
         // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
-        spin_lock_irq(&reference_monitor.lock);
+        spin_lock(&reference_monitor.lock);
         
         if(CURRENT_EUID != 0){
                 err_msg = "Current EUID is not 0";
@@ -410,13 +463,13 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
 
         kfree(kern_passw);
         kfree(kern_new_path);
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_unlock(&reference_monitor.lock);
         return 0;
 
 operation_failed:
         kfree(kern_passw);
         kfree(kern_new_path);
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_unlock(&reference_monitor.lock);
         pr_err("%s: %s\n",MODNAME,err_msg);
         return -1;
 }
@@ -462,7 +515,7 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
         // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
-        spin_lock_irq(&reference_monitor.lock);
+        spin_lock(&reference_monitor.lock);
         
         if(CURRENT_EUID != 0){
                 err_msg = "Current EUID is not 0";
@@ -489,7 +542,7 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
                         kfree(entry);
                         kfree(kern_passw);
                         kfree(kern_old_path);
-                        spin_unlock_irq(&reference_monitor.lock);
+                        spin_unlock(&reference_monitor.lock);
                         return 0;
                 }
         }
@@ -498,13 +551,13 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         kfree(kern_passw);
         kfree(kern_old_path);
         path_put(&path_obj);
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_unlock(&reference_monitor.lock);
         return -ENOENT;
 
 operation_failed:
         kfree(kern_passw);
         kfree(kern_old_path);
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_unlock(&reference_monitor.lock);
         pr_err("%s: %s\n",MODNAME,err_msg);
         return -1;
 }
@@ -569,9 +622,9 @@ int init_module(void) {
         pr_info("%s: all new system-calls correctly installed on sys-call table\n",MODNAME);
 
         //TODO register kprobes
-        register_my_kprobe();
+        register_my_kretprobe();
         AUDIT
-        pr_info("%s: all kprobes correctly registered\n",MODNAME);
+        pr_info("%s: all kretprobes correctly registered\n",MODNAME);
 
         return 0;
 
@@ -591,9 +644,9 @@ void cleanup_module(void) {
         pr_info("%s: sys-call table restored to its original content\n",MODNAME);
 
         //TODO unnregister kprobes
-        unregister_my_kprobe();
+        unregister_my_kretprobe();
         AUDIT
-        pr_info("%s: all kprobes correctly unregistered\n",MODNAME);
+        pr_info("%s: all kretprobes correctly unregistered\n",MODNAME);
 }
 
 
