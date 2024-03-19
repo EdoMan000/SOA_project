@@ -91,7 +91,7 @@ typedef struct _file_audit_log {
     uid_t uid;
     uid_t euid;
     char *program_path;
-    char *hash;
+    char *hash;  
     struct list_head list;
 } file_audit_log;
 
@@ -115,6 +115,90 @@ module_param(the_refmon_reconf,int,0660);
 
 static unsigned char the_refmon_secret[32]; // +1 for null terminator
 module_param_string(the_refmon_secret, the_refmon_secret, 32, 0);
+
+//==================================
+
+struct open_flags {
+        int open_flag;
+        umode_t mode;
+        int acc_mode;
+        int intent;
+        int lookup_flags;
+};
+
+// struct filename {
+// 	const char		*name;	/* pointer to actual string */
+// 	const __user char	*uptr;	/* original userland pointer */
+// 	int			refcnt;
+// 	struct audit_names	*aname;
+// 	const char		iname[];
+// };
+
+// struct file *do_filp_open(int dfd, struct filename *pathname,
+// 		const struct open_flags *op)
+// {
+// 	struct nameidata nd;
+// 	int flags = op->lookup_flags;
+// 	struct file *filp;
+
+// 	set_nameidata(&nd, dfd, pathname, NULL);
+// 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
+// 	if (unlikely(filp == ERR_PTR(-ECHILD)))
+// 		filp = path_openat(&nd, op, flags);
+// 	if (unlikely(filp == ERR_PTR(-ESTALE)))
+// 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
+// 	restore_nameidata();
+// 	return filp;
+// }
+
+static int pre_handler_do_filp_open(struct kprobe *p, struct pt_regs *regs) {
+        struct filename *pathname = (struct filename *)regs->si;
+        struct open_flags *op = (struct open_flags *)regs->dx;
+        struct path path_obj;
+        refmon_path *entry;
+
+        // Check if the file is being opened in write mode
+        if (op && (op->open_flag & (O_WRONLY | O_RDWR))) {
+                // Resolve the path to check against protected paths
+                if (kern_path(pathname->name, LOOKUP_FOLLOW, &path_obj) == 0) {
+                        spin_lock_irq(&reference_monitor.lock);
+                        list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+                                if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
+                                        pr_err("%s: File '%s' ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", MODNAME, pathname->name);
+                                        op->open_flag &= ~(O_WRONLY | O_RDWR);
+                                        op->open_flag |= O_RDONLY;
+                                }
+                        }
+                        spin_unlock_irq(&reference_monitor.lock);
+                        path_put(&path_obj);
+                }
+        }
+
+        return 0; // Return 0 to proceed with the original function execution
+}
+
+static struct kprobe kp = {
+    .symbol_name    = "do_filp_open",
+    .pre_handler    = pre_handler_do_filp_open,
+};
+
+int register_my_kprobe(void) {
+    int ret;
+    ret = register_kprobe(&kp);
+    if (ret < 0) {
+        pr_err("%s: Failed to register kprobe: %d\n", MODNAME,  ret);
+        return ret;
+    }
+    pr_info("%s: Kprobe registered\n", MODNAME);
+    return 0;
+}
+
+void unregister_my_kprobe(void) {
+    unregister_kprobe(&kp);
+    pr_info("%s: Kprobe unregistered\n", MODNAME);
+}
+
+//==================================
 
 static const char* state_to_string(state_t state, int opposite) {
     switch (state) {
@@ -146,7 +230,11 @@ static void update_state(state_t new_state, int reconf){
                 }
         }else{
                 if (reference_monitor.state != new_state) {
-                        //TODO: operation on kprobes (depending on new_state OFF->disattiva ON->attiva)
+                        if(new_state == ON){
+                                register_my_kprobe();
+                        }else{
+                                unregister_my_kprobe();
+                        }
                         reference_monitor.state = new_state;
                         if (the_refmon_reconf != reconf) {
                                 the_refmon_reconf = reconf;
@@ -227,25 +315,25 @@ asmlinkage long sys_refmon_manage(int code){
         }
         switch (code)
         {
-        case REFMON_SET_OFF:
-                update_state(OFF, 0);
-                break;
-        case REFMON_SET_ON:
-                update_state(ON, 0);
-                break;
-        case REFMON_SET_REC_OFF:
-                update_state(OFF, 1);
-                break;
-        case REFMON_SET_REC_ON:
-                update_state(ON, 1);
-                break;
-        case REFMON_STATE_QUERY:
-                print_current_refmon_state();
-                break;
-        default:
-                pr_err("%s: Provided code is unknown.\n",MODNAME);
-                spin_unlock_irq(&reference_monitor.lock);
-                return -EINVAL;
+                case REFMON_SET_OFF:
+                        update_state(OFF, 0);
+                        break;
+                case REFMON_SET_ON:
+                        update_state(ON, 0);
+                        break;
+                case REFMON_SET_REC_OFF:
+                        update_state(OFF, 1);
+                        break;
+                case REFMON_SET_REC_ON:
+                        update_state(ON, 1);
+                        break;
+                case REFMON_STATE_QUERY:
+                        print_current_refmon_state();
+                        break;
+                default:
+                        pr_err("%s: Provided code is unknown.\n",MODNAME);
+                        spin_unlock_irq(&reference_monitor.lock);
+                        return -EINVAL;
         }
         spin_unlock_irq(&reference_monitor.lock);
         return 0;
@@ -300,7 +388,7 @@ asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
         {
                 err_msg = "Authentication failed";
                 goto operation_failed;
-        }else if (the_refmon_reconf != 1) //TODO check atomic_read
+        }else if (the_refmon_reconf != 1) 
         {
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
@@ -383,7 +471,7 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
         {
                 err_msg = "Authentication failed";
                 goto operation_failed;
-        }else if (the_refmon_reconf != 1) //TODO check atomic_read
+        }else if (the_refmon_reconf != 1) 
         {
                 err_msg = "Reconfiguration is not enabled";
                 goto operation_failed;
@@ -397,7 +485,6 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
                 if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
                         list_del(&entry->list);
                         path_put(&entry->actual_path); 
-                        AUDIT
                         pr_info("%s: Path '%s' won't be protected anymore\n", MODNAME, kern_old_path);
                         kfree(entry);
                         kfree(kern_passw);
@@ -407,7 +494,6 @@ asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
                 }
         }
 
-        AUDIT
         pr_err("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, kern_old_path);
         kfree(kern_passw);
         kfree(kern_old_path);
@@ -483,6 +569,7 @@ int init_module(void) {
         pr_info("%s: all new system-calls correctly installed on sys-call table\n",MODNAME);
 
         //TODO register kprobes
+        register_my_kprobe();
         AUDIT
         pr_info("%s: all kprobes correctly registered\n",MODNAME);
 
@@ -504,6 +591,7 @@ void cleanup_module(void) {
         pr_info("%s: sys-call table restored to its original content\n",MODNAME);
 
         //TODO unnregister kprobes
+        unregister_my_kprobe();
         AUDIT
         pr_info("%s: all kprobes correctly unregistered\n",MODNAME);
 }
