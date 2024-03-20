@@ -56,43 +56,46 @@ MODULE_DESCRIPTION("reference monitor");
 #define CURRENT_EUID current->cred->euid.val
 #define RECONF_ENABLED 1
 #define RECONF_DISABLED 0
-// #define MAX_PATH_LEN 256
-// #define MAX_PROGRAM_PATH_LEN 256
-// #define MAX_PASSW_LEN 32
+#define MAX_PASSW_LEN 32
+
+typedef enum {
+        REFMON_ACTION_PROTECT,
+        REFMON_ACTION_UNPROTECT
+} refmon_action_t;
 
 enum refmon_ops {
-    REFMON_SET_OFF = 0,
-    REFMON_SET_ON = 1,
-    REFMON_SET_REC_OFF = 2,
-    REFMON_SET_REC_ON = 3,
-    REFMON_STATE_QUERY = 4
+        REFMON_SET_OFF = 0,
+        REFMON_SET_ON = 1,
+        REFMON_SET_REC_OFF = 2,
+        REFMON_SET_REC_ON = 3,
+        REFMON_STATE_QUERY = 4
 };
 
 typedef enum state {
-    ON,
-    OFF
+        ON,
+        OFF
 } state_t;
 
 typedef struct _refmon_path {
-    struct path actual_path;
-    struct list_head list;
+        struct path actual_path;
+        struct list_head list;
 } refmon_path;
 
 typedef struct _refmon {
-    state_t state;
-    spinlock_t lock;
-    char *password_digest;  
-    struct list_head protected_paths;           
+        state_t state;
+        spinlock_t lock;
+        char *password_digest;  
+        struct list_head protected_paths;           
 } refmon;
 
 typedef struct _file_audit_log {
-    pid_t tgid;
-    pid_t tid;
-    uid_t uid;
-    uid_t euid;
-    char *program_path;
-    char *hash;  
-    struct list_head list;
+        pid_t tgid;
+        pid_t tid;
+        uid_t uid;
+        uid_t euid;
+        char *program_path;
+        char *hash;  
+        struct list_head list;
 } file_audit_log;
 
 refmon reference_monitor;
@@ -104,7 +107,7 @@ module_param(the_syscall_table, ulong, 0);
 
 unsigned long the_ni_syscall;
 
-unsigned long new_sys_call_array[] = {0x0,0x0,0x0};
+unsigned long new_sys_call_array[] = {0x0,0x0};
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
@@ -113,73 +116,166 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 static int the_refmon_reconf = RECONF_DISABLED;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
 module_param(the_refmon_reconf,int,0660);
 
-static unsigned char the_refmon_secret[32]; // +1 for null terminator
-module_param_string(the_refmon_secret, the_refmon_secret, 32, 0);
+static unsigned char the_refmon_secret[MAX_PASSW_LEN]; // +1 for null terminator
+module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
 
 //==================================
 
-// struct open_flags {
-//         int open_flag;
-//         umode_t mode;
-//         int acc_mode;
-//         int intent;
-//         int lookup_flags;
-// };
+typedef struct {
+        char *kernel_passw;
+        char *kernel_path;
+        int status; 
+} copied_strings_t;
 
-// // struct filename {
-// // 	const char		*name;	/* pointer to actual string */
-// // 	const __user char	*uptr;	/* original userland pointer */
-// // 	int			refcnt;
-// // 	struct audit_names	*aname;
-// // 	const char		iname[];
-// // };
+/**
+ * Copies user-space strings `passw` and `path` to kernel space.
+ * 
+ * Allocates kernel memory for the copies, ensuring null-termination and 
+ * validating lengths are within bounds. Frees allocated memory on errors.
+ * 
+ * @param user_passw Pointer to user-space password string.
+ * @param user_path Pointer to user-space path string.
+ * @return A structure containing:
+ *   - `kernel_passw`: Kernel-space copy of `user_passw`. Caller must free.
+ *   - `kernel_path`: Kernel-space copy of `user_path`. Caller must free.
+ *   - `status`: 0 on success; -EFAULT for invalid lengths; -ENOMEM for allocation failures.
+ */
 
-// // struct file *do_filp_open(int dfd, struct filename *pathname,
-// // 		const struct open_flags *op)
-// // {
-// // 	struct nameidata nd;
-// // 	int flags = op->lookup_flags;
-// // 	struct file *filp;
+static copied_strings_t copy_strings_from_user(const char __user *user_passw, const char __user *user_path) {
+        copied_strings_t result;
+        unsigned long passw_len, path_len;
 
-// // 	set_nameidata(&nd, dfd, pathname, NULL);
-// // 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
-// // 	if (unlikely(filp == ERR_PTR(-ECHILD)))
-// // 		filp = path_openat(&nd, op, flags);
-// // 	if (unlikely(filp == ERR_PTR(-ESTALE)))
-// // 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
-// // 	restore_nameidata();
-// // 	return filp;
-// // }
+        result.kernel_passw = NULL;
+        result.kernel_path = NULL;
+        result.status = 0;
 
-// static int pre_handler_do_filp_open(struct kprobe *p, struct pt_regs *regs) {
-//         struct filename *pathname = (struct filename *)regs->si;
-//         struct open_flags *op = (struct open_flags *)regs->dx;
-//         struct path path_obj;
-//         refmon_path *entry;
+        passw_len = strnlen_user(user_passw, PAGE_SIZE);
+        path_len = strnlen_user(user_path, PAGE_SIZE);
 
-//         if (op && (op->open_flag & (O_WRONLY | O_RDWR))) {
-//                 if (kern_path(pathname->name, LOOKUP_FOLLOW, &path_obj) == 0) {
-//                         spin_lock(&reference_monitor.lock);
-//                         list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
-//                                 if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
-//                                         pr_err("%s: File '%s' ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", MODNAME, pathname->name);
-//                                         op->open_flag &= ~(O_WRONLY | O_RDWR);
-//                                         op->open_flag |= O_RDONLY;
-//                                 }
-//                         }
-//                         spin_unlock(&reference_monitor.lock);
-//                         path_put(&path_obj);
-//                 }
-//         }
+        if (passw_len == 0 || passw_len > PAGE_SIZE || path_len == 0 || path_len > PAGE_SIZE) {
+                result.status = -EFAULT;
+                return result;
+        }
 
-//         return 0; 
-// }
+        result.kernel_passw = kmalloc(passw_len, GFP_KERNEL);
+        result.kernel_path = kmalloc(path_len, GFP_KERNEL);
+        if (!result.kernel_passw || !result.kernel_path) {
+                result.status = -ENOMEM;
+                goto clean_up;
+        }
 
-// static struct kprobe kp = {
-//     .symbol_name    = "do_filp_open",
-//     .pre_handler    = pre_handler_do_filp_open,
-// };
+        if (copy_from_user(result.kernel_passw, user_passw, passw_len) != 0 || copy_from_user(result.kernel_path, user_path, path_len) != 0) {
+                result.status = -EFAULT;
+                goto clean_up;
+        }
 
+        result.kernel_passw[passw_len - 1] = '\0';
+        result.kernel_path[path_len - 1] = '\0';
+
+        return result;
+
+clean_up:
+        kfree(result.kernel_passw);
+        kfree(result.kernel_path);
+        result.kernel_passw = NULL;
+        result.kernel_path = NULL;
+        return result;
+}
+
+
+/**
+ * Check if a given path is already protected.
+ * 
+ * @param kern_path_str A kernel-space string representing the path to check.
+ * @return 1 if the path is protected, 0 otherwise. -1 is returned if given path couldn't be resolved.
+ */
+static int is_path_protected(const char *kern_path_str) {
+        struct path path_obj;
+        refmon_path *entry;
+        int ret = 0;
+
+        if (kern_path(kern_path_str, LOOKUP_FOLLOW, &path_obj)) {
+                return -1;
+        }
+
+        list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+                if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
+                ret = 1;
+                break;
+                }
+        }
+        path_put(&path_obj);
+        return ret;
+}
+
+/**
+ * Retrieve the entry for a given path if it is protected.
+ * 
+ * @param kern_path_str A kernel-space string representing the path to check.
+ * @return A pointer to the refmon_path entry if the path is protected, NULL otherwise.
+ */
+static refmon_path *get_protected_path_entry(const char *kern_path_str) {
+        struct path path_obj;
+        refmon_path *entry;
+
+        if (kern_path(kern_path_str, LOOKUP_FOLLOW, &path_obj)) {
+                return NULL;
+        }
+
+        list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+                if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
+                path_put(&path_obj); 
+                return entry;
+                }
+        }
+
+        path_put(&path_obj);
+        return NULL;
+}
+
+//==================================
+#define MAX_LOGMSG_LEN 256
+
+enum log_level {
+        LOG_ERR,
+        LOG_INFO
+};
+
+static void log_message(enum log_level level, const char *fmt, ...) {
+        va_list args;
+        char *log_msg;
+        const char *log_level_str;
+
+        switch (level) {
+                case LOG_ERR:
+                log_level_str = KERN_ERR;
+                break;
+                case LOG_INFO:
+                log_level_str = KERN_INFO;
+                break;
+                default:
+                log_level_str = KERN_DEFAULT; 
+                break;
+        }
+
+        va_start(args, fmt);
+
+        char formatted_msg[MAX_LOGMSG_LEN];
+        vsnprintf(formatted_msg, sizeof(formatted_msg), fmt, args);
+
+        va_end(args);
+
+        log_msg = kasprintf(GFP_KERNEL, "%s%s: %s", log_level_str, MODNAME, formatted_msg);
+
+        if (log_msg) {
+                printk("%s", log_msg);
+                kfree(log_msg);
+        } else {
+                printk("%s%s: Log message allocation failed\n", log_level_str, MODNAME);
+        }
+}
+
+//==================================
 struct kretprobe_data {
 	struct file * file;
 };
@@ -206,18 +302,26 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         struct path file_path = file->f_path;
                         char *file_path_buff = kmalloc(PATH_MAX, GFP_KERNEL);
                         if (!file_path_buff) {
-                                pr_err("%s: FAILED TO BLOCK ILLEGAL ACCESS! Couldn't allocate buffer to store pathname.\n", MODNAME, file_path);
-                                return -ENOMEM;
+                                log_message(LOG_ERR, "FAILED TO BLOCK ILLEGAL ACCESS! (Couldn't allocate buffer to store pathname.)\n", file_path);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,16,0)
+                                regs->ax = (unsigned long) -ENOMEM;
+#else
+                                regs_set_return_value(regs, -ENOMEM);
+#endif
+                                return 0;
                         }
                         char *pathname = d_path(&file_path, file_path_buff, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
-                        list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
-                                if (file_path.dentry == entry->actual_path.dentry && file_path.mnt == entry->actual_path.mnt) {
-                                        pr_warn("%s: File '%s' ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", MODNAME, pathname);
-                                        spin_unlock(&reference_monitor.lock);
-                                        kfree(file_path_buff);
-                                        return -EACCES;
-                                }
+                        if(is_path_protected(pathname)){
+                                log_message(LOG_INFO, "FILE '%s' WAS ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", pathname);
+                                spin_unlock(&reference_monitor.lock);
+                                kfree(file_path_buff);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,16,0)
+                                regs->ax = (unsigned long) -EACCES;
+#else
+                                regs_set_return_value(regs, -EACCES);
+#endif
+                                return 0;
                         }
                         spin_unlock(&reference_monitor.lock);
                         kfree(file_path_buff);
@@ -236,40 +340,40 @@ static struct kretprobe krp = {
 };
 
 int register_my_kretprobe(void) {
-    int ret;
-    ret = register_kretprobe(&krp);
-    if (ret < 0) {
-        pr_err("%s: Failed to register kretprobe: %d\n", MODNAME,  ret);
-        return ret;
-    }
-    pr_info("%s: Kprobe registered\n", MODNAME);
-    return 0;
+        int ret;
+        ret = register_kretprobe(&krp);
+        if (ret < 0) {
+                log_message(LOG_ERR, "Failed to register kretprobe: %d\n",  ret);
+                return ret;
+        }
+        log_message(LOG_INFO, "Kprobe registered\n");
+        return 0;
 }
 
 void unregister_my_kretprobe(void) {
-    unregister_kretprobe(&krp);
-    pr_info("%s: kretprobe unregistered\n", MODNAME);
+        unregister_kretprobe(&krp);
+        log_message(LOG_INFO, "kretprobe unregistered\n");
 }
 
 //==================================
 
 static const char* state_to_string(state_t state, int opposite) {
-    switch (state) {
-        case ON:
-                if(opposite){
-                        return "OFF";
-                }else{
-                        return "ON";
-                }
-        case OFF:
-                if(opposite){
-                        return "ON";
-                }else{
-                        return "OFF";
-                }
-        default:
-                return "Unknown State";
-    }
+        switch (state) {
+                case ON:
+                        if(opposite){
+                                return "OFF";
+                        }else{
+                                return "ON";
+                        }
+                case OFF:
+                        if(opposite){
+                                return "ON";
+                        }else{
+                                return "OFF";
+                        }
+                default:
+                        return "Unknown State";
+        }
 }
 
 static void update_state(state_t new_state, int reconf){
@@ -277,9 +381,9 @@ static void update_state(state_t new_state, int reconf){
         const char *opposite_state_str = state_to_string(new_state, 1);
         if(reference_monitor.state == new_state && the_refmon_reconf == reconf){
                 if(reconf != RECONF_ENABLED){
-                        pr_info("%s: The reference monitor was already %s. Nothing done.\n",MODNAME, state_str);
+                        log_message(LOG_INFO, "The reference monitor was already %s. Nothing done.\n", state_str);
                 }else{
-                        pr_info("%s: The reference monitor was already REC-%s. Nothing done.\n",MODNAME, state_str);
+                        log_message(LOG_INFO, "The reference monitor was already REC-%s. Nothing done.\n", state_str);
                 }
         }else{
                 if (reference_monitor.state != new_state) {
@@ -292,20 +396,20 @@ static void update_state(state_t new_state, int reconf){
                         if (the_refmon_reconf != reconf) {
                                 the_refmon_reconf = reconf;
                                 if(reconf != RECONF_ENABLED){
-                                        pr_info("%s: The reference monitor was REC-%s. It is now %s.\n", MODNAME, opposite_state_str, state_str);
+                                        log_message(LOG_INFO, "The reference monitor was REC-%s. It is now %s.\n", opposite_state_str, state_str);
                                 }else{
-                                        pr_info("%s: The reference monitor was %s. It is now REC-%s.\n", MODNAME, opposite_state_str, state_str);
+                                        log_message(LOG_INFO, "The reference monitor was %s. It is now REC-%s.\n", opposite_state_str, state_str);
                                 }
                         } else {
                                 if(reconf != RECONF_ENABLED){
-                                        pr_info("%s: The reference monitor was %s. It is now %s.\n", MODNAME, opposite_state_str, state_str);
+                                        log_message(LOG_INFO, "The reference monitor was %s. It is now %s.\n", opposite_state_str, state_str);
                                 }else{
-                                        pr_info("%s: The reference monitor was REC-%s. It is now REC-%s.\n", MODNAME, opposite_state_str, state_str);
+                                        log_message(LOG_INFO, "The reference monitor was REC-%s. It is now REC-%s.\n", opposite_state_str, state_str);
                                 }
                         }
                 } else {
                         the_refmon_reconf = reconf;
-                        pr_info("%s: The reference monitor was REC-%s. It is now %s.\n", MODNAME, state_str, state_str);
+                        log_message(LOG_INFO, "The reference monitor was REC-%s. It is now %s.\n", state_str, state_str);
                 }
         }
 }
@@ -316,34 +420,34 @@ static void print_current_refmon_state(void){
         struct path path;
         if (the_refmon_reconf != 1) {
                 if (reference_monitor.state == ON) {
-                        pr_info("%s: Current state is ON.\n", MODNAME);
+                        log_message(LOG_INFO, "Current state is ON.\n");
                 } else {
-                        pr_info("%s: Current state is OFF.\n", MODNAME);
+                        log_message(LOG_INFO, "Current state is OFF.\n");
                 }
         } else {
                 if (reference_monitor.state == ON) {
-                        pr_info("%s: Current state is REC-ON.\n", MODNAME);
+                        log_message(LOG_INFO, "Current state is REC-ON.\n");
                 } else {
-                        pr_info("%s: Current state is REC-OFF.\n", MODNAME);
+                        log_message(LOG_INFO, "Current state is REC-OFF.\n");
                 }
         }
         if (list_empty(&reference_monitor.protected_paths)) {
-                pr_info("%s: Currently there are no protected paths.\n", MODNAME);
+                log_message(LOG_INFO, "Currently there are no protected paths.\n");
         } else {
-                pr_info("%s: Listing all protected paths:\n", MODNAME);
+                log_message(LOG_INFO, "Listing all protected paths:\n");
                 refmon_path *entry;
                 list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
                         path = entry->actual_path;
                         buf = (char *)__get_free_page(GFP_KERNEL);
                         if (!buf) {
-                                pr_err("%s: Failed to allocate memory for path buffer\n", MODNAME);
+                                log_message(LOG_ERR, "Failed to allocate memory for path buffer\n");
                                 break;
                         }
                         pathname = d_path(&path, buf, PAGE_SIZE);
                         if (IS_ERR(pathname)) {
-                                pr_err("%s: Error converting path to string\n", MODNAME);
+                                log_message(LOG_ERR, "Error converting path to string\n");
                         } else {
-                                pr_info("%s: Protected path: %s\n", MODNAME, pathname);
+                                log_message(LOG_INFO, "Protected path: %s\n", pathname);
                         }
                         free_page((unsigned long)buf);
                 }
@@ -356,15 +460,15 @@ __SYSCALL_DEFINEx(1, _refmon_manage, int, code){
 #else
 asmlinkage long sys_refmon_manage(int code){
 #endif
-        AUDIT
-        pr_info("%s: sys_refmon_manage called from thread %d\n",MODNAME,current->pid);
+        int ret = 0;
+        log_message(LOG_INFO, "sys_refmon_manage called from thread %d\n",current->pid);
 
         spin_lock(&reference_monitor.lock);
 
         if(CURRENT_EUID != 0){
-                pr_err("%s: Current EUID is not 0\n", MODNAME);
-                spin_unlock(&reference_monitor.lock);
-                return -1;
+                log_message(LOG_ERR, "Current EUID is not 0\n");
+                ret = -1;
+                goto exit;
         }
         switch (code)
         {
@@ -384,189 +488,130 @@ asmlinkage long sys_refmon_manage(int code){
                         print_current_refmon_state();
                         break;
                 default:
-                        pr_err("%s: Provided code is unknown.\n",MODNAME);
-                        spin_unlock(&reference_monitor.lock);
+                        log_message(LOG_ERR, "Provided code is unknown.\n");
+                        ret = -EINVAL;
+                        break;
+        }
+exit:
+        spin_unlock(&reference_monitor.lock);
+        return ret;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+__SYSCALL_DEFINEx(3, _refmon_reconfigure, refmon_action_t, action, char __user *, passw, char __user *, path){
+#else
+asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *passw, char __user *path){
+#endif
+        int ret = 0;
+        pid_t curr_pid = current->pid;
+
+        refmon_path *the_refmon_path;
+
+        copied_strings_t copied = copy_strings_from_user(passw, path);
+        if (copied.status != 0) {
+                return copied.status;
+        }
+
+        char *kernel_passw = copied.kernel_passw;
+        char *kernel_path = copied.kernel_path;
+
+        char* action_str;
+        switch (action) {
+                case REFMON_ACTION_PROTECT:
+                        action_str = "REFMON_ACTION_PROTECT";
+                        break;
+                case REFMON_ACTION_UNPROTECT:
+                        action_str = "REFMON_ACTION_UNPROTECT";
+                        break;
+                default:
+                        log_message(LOG_ERR, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", "REFMON_ACTION_INVALID", kernel_passw, kernel_path, curr_pid);
+                        kfree(kernel_passw);
+                        kfree(kernel_path);
                         return -EINVAL;
         }
-        spin_unlock(&reference_monitor.lock);
-        return 0;
-}
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(2, _refmon_protect, char __user *, passw, char __user *, new_path){
-#else
-asmlinkage long sys_refmon_protect(char __user *passw, char __user *new_path){
-#endif
-        pid_t curr_pid = current->pid;
-        char *kern_passw = NULL;
-        char *kern_new_path = NULL;
-        char* err_msg;
-        unsigned long passw_len, new_path_len;
-        refmon_path *new_refmon_path;
-
-        passw_len = strnlen_user(passw, PAGE_SIZE);
-        new_path_len = strnlen_user(new_path, PAGE_SIZE);
-
-        if (passw_len > PAGE_SIZE || new_path_len > PAGE_SIZE || passw_len == 0 || new_path_len == 0) {
-                return -EFAULT;
-        }
-
-        kern_passw = kmalloc(passw_len, GFP_KERNEL);
-        kern_new_path = kmalloc(new_path_len, GFP_KERNEL);
-        if (!kern_passw || !kern_new_path) {
-                kfree(kern_passw);
-                kfree(kern_new_path);
-                return -ENOMEM;
-        }
-
-        if (copy_from_user(kern_passw, passw, passw_len) != 0 || copy_from_user(kern_new_path, new_path, new_path_len) != 0) {
-                kfree(kern_passw);
-                kfree(kern_new_path);
-                return -ENOMEM;
-        }
-
-        kern_passw[passw_len - 1] = '\0';
-        kern_new_path[new_path_len - 1] = '\0';
-
-        pr_info("%s: sys_refmon_protect(%s, %s) called from thread %d\n", MODNAME, kern_passw, kern_new_path, curr_pid);
-        // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
-        // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
+        log_message(LOG_INFO, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", action_str, kernel_passw, kernel_path, curr_pid);
 
         spin_lock(&reference_monitor.lock);
-        
-        if(CURRENT_EUID != 0){
-                err_msg = "Current EUID is not 0";
-                goto operation_failed;
-        }else if (verify_password(kern_passw, strlen(kern_passw), reference_monitor.password_digest)  != 0)
-        {
-                err_msg = "Authentication failed";
-                goto operation_failed;
-        }else if (the_refmon_reconf != 1) 
-        {
-                err_msg = "Reconfiguration is not enabled";
-                goto operation_failed;
-        }
-        new_refmon_path = kmalloc(sizeof(*new_refmon_path), GFP_KERNEL);
-        if (!new_refmon_path) {
-                err_msg = "Couldn't allocate memory for new refmon path";
-                goto operation_failed;
-        }
-        if (kern_path(kern_new_path, LOOKUP_FOLLOW, &new_refmon_path->actual_path)) 
-        {
-                err_msg = "Invalid path was given";
-                kfree(new_refmon_path);
-                goto operation_failed;
-        }
-        list_add(&new_refmon_path->list, &reference_monitor.protected_paths);
-        AUDIT
-        pr_info("%s: Starting to monitor new path '%s'\n", MODNAME, kern_new_path);
 
-        kfree(kern_passw);
-        kfree(kern_new_path);
-        spin_unlock(&reference_monitor.lock);
-        return 0;
-
-operation_failed:
-        kfree(kern_passw);
-        kfree(kern_new_path);
-        spin_unlock(&reference_monitor.lock);
-        pr_err("%s: %s\n",MODNAME,err_msg);
-        return -1;
-}
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(2, _refmon_unprotect, char __user *, passw, char __user *, old_path){
-#else
-asmlinkage long sys_refmon_unprotect(char __user *passw, char __user *old_path){
-#endif
-        pid_t curr_pid = current->pid;
-        char *kern_passw = NULL;
-        char *kern_old_path = NULL;
-        char* err_msg;
-        unsigned long passw_len, old_path_len;
-        struct path path_obj;
-        refmon_path *entry, *tmp;
-
-	passw_len = strnlen_user(passw, PAGE_SIZE);
-        old_path_len = strnlen_user(old_path, PAGE_SIZE);
-
-        if (passw_len > PAGE_SIZE || old_path_len > PAGE_SIZE || passw_len == 0 || old_path_len == 0) {
-                return -EFAULT;
-        }
-
-        kern_passw = kmalloc(passw_len, GFP_KERNEL);
-        kern_old_path = kmalloc(old_path_len, GFP_KERNEL);
-        if (!kern_passw || !kern_old_path) {
-                kfree(kern_passw);
-                kfree(kern_old_path);
-                return -ENOMEM;
-        }
-
-        if (copy_from_user(kern_passw, passw, passw_len) != 0 || copy_from_user(kern_old_path, old_path, old_path_len) != 0) {
-                kfree(kern_passw);
-                kfree(kern_old_path);
-                return -ENOMEM;
-        }
-
-        kern_passw[passw_len - 1] = '\0';
-        kern_old_path[old_path_len - 1] = '\0';
-
-        pr_info("%s: sys_refmon_unprotect(%s, %s) called from thread %d\n", MODNAME, kern_passw, kern_old_path, curr_pid);
-        // pr_info("%s: PASSWORD: '%s' | LEN '%ld'\n",MODNAME, kern_passw, strlen(kern_passw));
-        // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
-
-        spin_lock(&reference_monitor.lock);
-        
-        if(CURRENT_EUID != 0){
-                err_msg = "Current EUID is not 0";
-                goto operation_failed;
-        }else if (verify_password(kern_passw, strlen(kern_passw), reference_monitor.password_digest)  != 0)
-        {
-                err_msg = "Authentication failed";
-                goto operation_failed;
-        }else if (the_refmon_reconf != 1) 
-        {
-                err_msg = "Reconfiguration is not enabled";
-                goto operation_failed;
-        }else if (kern_path(kern_old_path, LOOKUP_FOLLOW, &path_obj))
-        {
-                err_msg = "Invalid path was given";
-                goto operation_failed;
-        }
-
-        list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
-                if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
-                        list_del(&entry->list);
-                        path_put(&entry->actual_path); 
-                        pr_info("%s: Path '%s' won't be protected anymore\n", MODNAME, kern_old_path);
-                        kfree(entry);
-                        kfree(kern_passw);
-                        kfree(kern_old_path);
-                        spin_unlock(&reference_monitor.lock);
-                        return 0;
+        // Common checks
+        if(CURRENT_EUID != 0) {
+                log_message(LOG_ERR, "Current EUID is not 0.\n");
+                ret = -1;
+                goto exit;
+        } else if (verify_password(kernel_passw, strlen(kernel_passw), reference_monitor.password_digest) != 0) {
+                log_message(LOG_ERR, "Authentication failed.\n");
+                ret = -1;
+                goto exit;
+        } else if (the_refmon_reconf != 1) {
+                log_message(LOG_ERR, "Reconfiguration is not enabled.\n");
+                ret = -1;
+                goto exit;
+        } else {
+                // Action-specific logic
+                switch (action) {
+                case REFMON_ACTION_PROTECT:
+                        switch (is_path_protected(kernel_path))
+                        {
+                                case 0:
+                                        the_refmon_path = kmalloc(sizeof(*the_refmon_path), GFP_KERNEL);
+                                        if (!the_refmon_path) {
+                                                log_message(LOG_ERR, "Couldn't allocate memory for new refmon path.\n");
+                                                ret = -1;
+                                                goto exit;
+                                        }
+                                        kern_path(kernel_path, LOOKUP_FOLLOW, &the_refmon_path->actual_path);
+                                        list_add(&the_refmon_path->list, &reference_monitor.protected_paths);
+                                        log_message(LOG_INFO, "Starting to monitor new path '%s'\n", kernel_path);
+                                        ret = 0;
+                                        goto exit;
+                                case 1:
+                                        log_message(LOG_ERR, "Path '%s' is already protected. Nothing done...\n", kernel_path);
+                                        ret = -1;
+                                        goto exit;
+                                default:
+                                        log_message(LOG_ERR, "Path '%s' does not exist or is not a valid path. Nothing done...\n", kernel_path);
+                                        ret = -1;
+                                        goto exit;
+                        }
+                        break;
+                case REFMON_ACTION_UNPROTECT:
+                        switch (is_path_protected(kernel_path))
+                        {
+                                case 0:
+                                        log_message(LOG_ERR, "Path '%s' does not show up as one of the monitored paths. Nothing done...\n", kernel_path);
+                                        ret = -1;
+                                        goto exit;
+                                case 1:
+                                        the_refmon_path = get_protected_path_entry(kernel_path);
+                                        list_del(&the_refmon_path->list);
+                                        path_put(&the_refmon_path->actual_path); 
+                                        kfree(the_refmon_path);
+                                        log_message(LOG_INFO, "Path '%s' won't be protected anymore.\n", kernel_path);
+                                        ret = 0;
+                                        goto exit;
+                                default:
+                                        log_message(LOG_ERR, "Path '%s' does not exist or is not a valid path. Nothing done...\n", kernel_path);
+                                        ret = -1;
+                                        goto exit;
+                        }
+                        break;
+                default:
+                        log_message(LOG_ERR, "Invalid action.\n");
+                        ret = -EINVAL;
+                        break;
                 }
         }
 
-        pr_err("%s: Path '%s' does not show up as one of the monitored paths\n", MODNAME, kern_old_path);
-        kfree(kern_passw);
-        kfree(kern_old_path);
-        path_put(&path_obj);
+exit:
         spin_unlock(&reference_monitor.lock);
-        return -ENOENT;
-
-operation_failed:
-        kfree(kern_passw);
-        kfree(kern_old_path);
-        spin_unlock(&reference_monitor.lock);
-        pr_err("%s: %s\n",MODNAME,err_msg);
-        return -1;
+        kfree(kernel_passw);
+        kfree(kernel_path);
+        return ret;
 }
-
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 long sys_refmon_manage = (unsigned long) __x64_sys_refmon_manage;
-long sys_refmon_protect = (unsigned long) __x64_sys_refmon_protect;
-long sys_refmon_unprotect = (unsigned long) __x64_sys_refmon_unprotect;
+long sys_refmon_reconfigure = (unsigned long) __x64_sys_refmon_reconfigure;
 #else
 #endif
 
@@ -574,7 +619,7 @@ int init_module(void) {
         int i;
         int ret;
         AUDIT
-        pr_info("%s: starting up\n",MODNAME);
+        log_message(LOG_INFO, "starting up!\n");
 
         //TODO vedere se necessario controllo sulla lunghezza eccessiva di the_refmon_secret
 
@@ -582,35 +627,31 @@ int init_module(void) {
         reference_monitor.state = ON; //scegliere se mettere off e spostare il settaggio delle kprobes
         spin_lock_init(&reference_monitor.lock);
         INIT_LIST_HEAD(&reference_monitor.protected_paths);
-        reference_monitor.password_digest = kmalloc(32, GFP_KERNEL);
+        reference_monitor.password_digest = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
         if(!reference_monitor.password_digest){
-                pr_err("%s: memory allocation failed for storing password digest\n",MODNAME);
+                log_message(LOG_ERR, "memory allocation failed for storing password digest\n");
                 return -ENOMEM;
         }
         int sha_ret = compute_sha256(the_refmon_secret, strlen(the_refmon_secret), reference_monitor.password_digest);
         if (sha_ret){
-                pr_err("%s: password encryption failed\n",MODNAME);
+                log_message(LOG_ERR, "password encryption failed\n");
                 return sha_ret;
         }
-        pr_info("%s: starting up\n",MODNAME);
-        // pr_info("%s: PASSWORD: '%s' | LEN '%d'\n", MODNAME, the_refmon_secret, strlen(the_refmon_secret));
-        // print_hex_dump(KERN_DEBUG, "DIGEST", DUMP_PREFIX_NONE, 16, 1, reference_monitor.password_digest, sizeof(reference_monitor.password_digest), true);
 
         //hack syscall table
         if (the_syscall_table == 0x0){
-                pr_err("%s: cannot manage sys_call_table address set to 0x0\n",MODNAME);
+                log_message(LOG_ERR, "cannot manage sys_call_table address set to 0x0\n");
                 return -1;
         }
-        AUDIT{
-           pr_info("%s: received sys_call_table address %px\n",MODNAME,(void*)the_syscall_table);
-           pr_info("%s: initializing - hacked entries %d\n",MODNAME,HACKED_ENTRIES);
-        }
+        
+        log_message(LOG_INFO, "received sys_call_table address %px\n",(void*)the_syscall_table);
+        log_message(LOG_INFO, "initializing - hacked entries %d\n",HACKED_ENTRIES);
+
         new_sys_call_array[0] = (unsigned long)sys_refmon_manage;
-        new_sys_call_array[1] = (unsigned long)sys_refmon_protect;
-        new_sys_call_array[2] = (unsigned long)sys_refmon_unprotect;
+        new_sys_call_array[1] = (unsigned long)sys_refmon_reconfigure;
         ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
         if (ret != HACKED_ENTRIES){
-                pr_err("%s: could not hack %d entries (just %d)\n",MODNAME,HACKED_ENTRIES,ret);
+                log_message(LOG_ERR, "could not hack %d entries (just %d)\n",HACKED_ENTRIES,ret);
                 return -1;
         }
         unprotect_memory();
@@ -618,13 +659,11 @@ int init_module(void) {
                 ((unsigned long *)the_syscall_table)[restore[i]] = (unsigned long)new_sys_call_array[i];
         }
         protect_memory();
-        AUDIT
-        pr_info("%s: all new system-calls correctly installed on sys-call table\n",MODNAME);
+        log_message(LOG_INFO, "all new system-calls correctly installed on sys-call table\n");
 
         //TODO register kprobes
         register_my_kretprobe();
-        AUDIT
-        pr_info("%s: all kretprobes correctly registered\n",MODNAME);
+        log_message(LOG_INFO, "all kretprobes correctly registered\n");
 
         return 0;
 
@@ -632,21 +671,18 @@ int init_module(void) {
 
 void cleanup_module(void) {
         int i;
-        AUDIT
-        pr_info("%s: shutting down\n",MODNAME);
+        log_message(LOG_INFO, "shutting down\n");
 
         unprotect_memory();
         for(i=0;i<HACKED_ENTRIES;i++){
                 ((unsigned long *)the_syscall_table)[restore[i]] = the_ni_syscall;
         }
         protect_memory();
-        AUDIT
-        pr_info("%s: sys-call table restored to its original content\n",MODNAME);
+        log_message(LOG_INFO, "sys-call table restored to its original content\n");
 
         //TODO unnregister kprobes
         unregister_my_kretprobe();
-        AUDIT
-        pr_info("%s: all kretprobes correctly unregistered\n",MODNAME);
+        log_message(LOG_INFO, "all kretprobes correctly unregistered\n");
 }
 
 

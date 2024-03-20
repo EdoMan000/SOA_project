@@ -31,7 +31,7 @@ int verify_password(const unsigned char *password, unsigned int passlen, const u
 {
     int ret;
 
-    unsigned char *computed_hash = kmalloc(32, GFP_KERNEL);
+    unsigned char *computed_hash = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
     if(!computed_hash){
         pr_err("Couldn't allocate memory to store computed hash\n");
         return -ENOMEM;

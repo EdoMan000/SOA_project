@@ -66,7 +66,7 @@ define set_parameter
 			fi \
 		fi \
 	else \
-		echo "Error: Unable to read the reconfiguration state of the reference monitor."; \
+		echo "Error: Unable to read the reconfiguration state of the reference monitor. Check if module is mounted."; \
 	fi
 endef
 
