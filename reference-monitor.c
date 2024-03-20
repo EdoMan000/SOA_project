@@ -78,6 +78,7 @@ typedef enum state {
 
 typedef struct _refmon_path {
         struct path actual_path;
+        unsigned long inode;
         struct list_head list;
 } refmon_path;
 
@@ -206,6 +207,23 @@ static int is_path_protected(const char *kern_path_str) {
 }
 
 /**
+ * Check if a given file, identified by its inode number, is protected.
+ * 
+ * @param inode_num The inode number of the file to check.
+ * @return 1 if the file is protected, 0 otherwise.
+ */
+static int is_file_protected(unsigned long inode_num) {
+    refmon_path *entry;
+
+    list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+        if (entry->inode == inode_num) {
+            return 1; 
+        }
+    }
+    return 0; 
+}
+
+/**
  * Retrieve the entry for a given path if it is protected.
  * 
  * @param kern_path_str A kernel-space string representing the path to check.
@@ -297,6 +315,7 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                 if (file->f_mode & FMODE_WRITE) {
                         refmon_path *entry;
                         struct path file_path = file->f_path;
+                        unsigned long accessed_inode = file_inode(file)->i_ino;
                         char *file_path_buff = kmalloc(PATH_MAX, GFP_KERNEL);
                         if (!file_path_buff) {
                                 log_message(LOG_ERR, "FAILED TO BLOCK POTENTIALLY ILLEGAL ACCESS! (Couldn't allocate buffer to store pathname.)\n", file_path);
@@ -309,7 +328,7 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         }
                         char *pathname = d_path(&file_path, file_path_buff, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
-                        if(reference_monitor.state == ON && is_path_protected(pathname)){
+                        if(is_file_protected(accessed_inode)){
                                 log_message(LOG_INFO, "FILE '%s' WAS ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", pathname);
                                 spin_unlock(&reference_monitor.lock);
                                 kfree(file_path_buff);
@@ -554,6 +573,7 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                                                 goto exit;
                                         }
                                         kern_path(kernel_path, LOOKUP_FOLLOW, &the_refmon_path->actual_path);
+                                        the_refmon_path->inode = d_backing_inode(the_refmon_path->actual_path.dentry)->i_ino;
                                         list_add(&the_refmon_path->list, &reference_monitor.protected_paths);
                                         log_message(LOG_INFO, "Starting to monitor new path '%s'\n", kernel_path);
                                         ret = 0;
@@ -652,6 +672,7 @@ int init_module(void) {
         protect_memory();
         log_message(LOG_INFO, "all new system-calls correctly installed on sys-call table\n");
         register_my_kretprobe();
+        log_message(LOG_INFO, "all kretprobes correctly registered\n");
 
         return 0;
 
@@ -671,5 +692,3 @@ void cleanup_module(void) {
         unregister_my_kretprobe();
         log_message(LOG_INFO, "all kretprobes correctly unregistered\n");
 }
-
-
