@@ -113,7 +113,7 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
 #define AUDIT if(1)
 
-static int the_refmon_reconf = RECONF_DISABLED;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
+static int the_refmon_reconf = RECONF_ENABLED;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
 module_param(the_refmon_reconf,int,0660);
 
 static unsigned char the_refmon_secret[MAX_PASSW_LEN]; // +1 for null terminator
@@ -129,9 +129,6 @@ typedef struct {
 
 /**
  * Copies user-space strings `passw` and `path` to kernel space.
- * 
- * Allocates kernel memory for the copies, ensuring null-termination and 
- * validating lengths are within bounds. Frees allocated memory on errors.
  * 
  * @param user_passw Pointer to user-space password string.
  * @param user_path Pointer to user-space path string.
@@ -296,13 +293,13 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
         struct kretprobe_data *data = (struct kretprobe_data *)ri->data;
         struct file* file = data->file;
 
-        if (file) {
+        if (file && reference_monitor.state == ON) {
                 if (file->f_mode & FMODE_WRITE) {
                         refmon_path *entry;
                         struct path file_path = file->f_path;
                         char *file_path_buff = kmalloc(PATH_MAX, GFP_KERNEL);
                         if (!file_path_buff) {
-                                log_message(LOG_ERR, "FAILED TO BLOCK ILLEGAL ACCESS! (Couldn't allocate buffer to store pathname.)\n", file_path);
+                                log_message(LOG_ERR, "FAILED TO BLOCK POTENTIALLY ILLEGAL ACCESS! (Couldn't allocate buffer to store pathname.)\n", file_path);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,16,0)
                                 regs->ax = (unsigned long) -ENOMEM;
 #else
@@ -312,7 +309,7 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         }
                         char *pathname = d_path(&file_path, file_path_buff, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
-                        if(is_path_protected(pathname)){
+                        if(reference_monitor.state == ON && is_path_protected(pathname)){
                                 log_message(LOG_INFO, "FILE '%s' WAS ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", pathname);
                                 spin_unlock(&reference_monitor.lock);
                                 kfree(file_path_buff);
@@ -327,9 +324,9 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         kfree(file_path_buff);
                 }
         }
-
         return 0; 
 }
+
 
 
 static struct kretprobe krp = {
@@ -339,15 +336,13 @@ static struct kretprobe krp = {
         .data_size          = sizeof(struct kretprobe_data),
 };
 
-int register_my_kretprobe(void) {
-        int ret;
-        ret = register_kretprobe(&krp);
+void register_my_kretprobe(void) {
+        int ret = register_kretprobe(&krp);
         if (ret < 0) {
-                log_message(LOG_ERR, "Failed to register kretprobe: %d\n",  ret);
-                return ret;
+                log_message(LOG_ERR, "kretprobe registration failed: %d\n",  ret);
+        } else {
+                log_message(LOG_INFO, "kretprobe registered\n");
         }
-        log_message(LOG_INFO, "Kprobe registered\n");
-        return 0;
 }
 
 void unregister_my_kretprobe(void) {
@@ -387,11 +382,6 @@ static void update_state(state_t new_state, int reconf){
                 }
         }else{
                 if (reference_monitor.state != new_state) {
-                        if(new_state == ON){
-                                register_my_kretprobe();
-                        }else{
-                                unregister_my_kretprobe();
-                        }
                         reference_monitor.state = new_state;
                         if (the_refmon_reconf != reconf) {
                                 the_refmon_reconf = reconf;
@@ -409,7 +399,11 @@ static void update_state(state_t new_state, int reconf){
                         }
                 } else {
                         the_refmon_reconf = reconf;
-                        log_message(LOG_INFO, "The reference monitor was REC-%s. It is now %s.\n", state_str, state_str);
+                        if(reconf != RECONF_ENABLED){
+                                log_message(LOG_INFO, "The reference monitor was REC-%s. It is now %s.\n", state_str, state_str);
+                        }else{
+                                log_message(LOG_INFO, "The reference monitor was %s. It is now REC-%s.\n", state_str, state_str);
+                        }
                 }
         }
 }
@@ -618,13 +612,10 @@ long sys_refmon_reconfigure = (unsigned long) __x64_sys_refmon_reconfigure;
 int init_module(void) {
         int i;
         int ret;
-        AUDIT
         log_message(LOG_INFO, "starting up!\n");
 
-        //TODO vedere se necessario controllo sulla lunghezza eccessiva di the_refmon_secret
-
         //init reference monitor struct
-        reference_monitor.state = ON; //scegliere se mettere off e spostare il settaggio delle kprobes
+        reference_monitor.state = ON;
         spin_lock_init(&reference_monitor.lock);
         INIT_LIST_HEAD(&reference_monitor.protected_paths);
         reference_monitor.password_digest = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
@@ -660,10 +651,7 @@ int init_module(void) {
         }
         protect_memory();
         log_message(LOG_INFO, "all new system-calls correctly installed on sys-call table\n");
-
-        //TODO register kprobes
         register_my_kretprobe();
-        log_message(LOG_INFO, "all kretprobes correctly registered\n");
 
         return 0;
 
@@ -680,7 +668,6 @@ void cleanup_module(void) {
         protect_memory();
         log_message(LOG_INFO, "sys-call table restored to its original content\n");
 
-        //TODO unnregister kprobes
         unregister_my_kretprobe();
         log_message(LOG_INFO, "all kretprobes correctly unregistered\n");
 }
