@@ -22,6 +22,8 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
+#include <linux/mount.h>    
+#include <linux/dcache.h> 
 #include <linux/cdev.h>
 #include <linux/errno.h>
 #include <linux/device.h>
@@ -206,6 +208,7 @@ static int is_path_protected(const char *kern_path_str) {
         return ret;
 }
 
+
 /**
  * Check if a given inode corresponds to a protected file.
  * 
@@ -222,6 +225,34 @@ static int is_inode_protected(unsigned long inode_num) {
     }
     return 0; 
 }
+
+
+/**
+ * Check if any parent directory of the given dentry is protected.
+ * 
+ * @param dentry The dentry for which to check the parent directories.
+ * @return 1 if any parent directory is protected, 0 otherwise.
+ */
+static int is_any_parent_protected(struct dentry *dentry) {
+    struct dentry *current_dentry = dget(dentry); 
+    struct dentry *parent_dentry;
+    int is_protected = 0;
+
+    while (!IS_ROOT(current_dentry)) {
+        if (is_inode_protected(d_backing_inode(current_dentry)->i_ino)) {
+            is_protected = 1;
+            break; 
+        }
+
+        parent_dentry = dget_parent(current_dentry);
+        dput(current_dentry); 
+        current_dentry = parent_dentry; 
+    }
+
+    dput(current_dentry); 
+    return is_protected;
+}
+
 
 /**
  * Retrieve the entry for a given path if it is protected.
@@ -313,14 +344,12 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
 
         if (file) {
                 if (file->f_mode & FMODE_WRITE) {
-                        refmon_path *entry;
-                        struct path file_path = file->f_path;
                         char *pathname;
                         char path_buf[PATH_MAX];
-                        pathname = d_path(&file_path, path_buf, PATH_MAX);
-                        unsigned long accessed_inode = file_inode(file)->i_ino;
+                        struct dentry *dentry = file->f_path.dentry;
+                        pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
-                        if(is_inode_protected(accessed_inode)){
+                        if(is_any_parent_protected(dentry)){
                                 log_message(LOG_INFO, "FILE '%s' WAS ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n", pathname);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
@@ -342,9 +371,7 @@ static struct kretprobe krp_security_file_open = {
 
 //==================================
 struct krp_security_inode_rename_data {
-	struct inode *old_dir;
         struct dentry *old_dentry;
-        struct inode *new_dir; 
         struct dentry *new_dentry;
 };
 
@@ -356,24 +383,17 @@ static int entry_handler_security_inode_rename(struct kretprobe_instance *ri, st
 		return 1;	/* Skip kernel threads */
 
 	data = (struct krp_security_inode_rename_data *)ri->data;
-        data->old_dir = (struct inode *)regs->di;
         data->old_dentry = (struct dentry *)regs->si;
-        data->new_dir = (struct inode *)regs->dx; 
         data->new_dentry = (struct dentry *)regs->cx;
 	return 0;
 }
 
 static int handler_security_inode_rename(struct kretprobe_instance *ri, struct pt_regs *regs) {
         struct krp_security_inode_rename_data *data = (struct krp_security_inode_rename_data *)ri->data;
-        struct inode *old_dir = data->old_dir;
         struct dentry *old_dentry = data->old_dentry;
-        struct inode *new_dir = data->new_dir; 
         struct dentry *new_dentry = data->new_dentry;
 
-        unsigned long old_file_inode = d_backing_inode(old_dentry)->i_ino;
-        unsigned long new_file_inode = d_is_positive(new_dentry) ? d_backing_inode(new_dentry)->i_ino : 0;
-
-        if (is_inode_protected(old_file_inode) || (new_file_inode && is_inode_protected(new_file_inode))) {
+        if (is_any_parent_protected(old_dentry) || is_any_parent_protected(new_dentry)) {
                 char old_path_buf[PATH_MAX];
                 char new_path_buf[PATH_MAX];
                 char *old_pathname, *new_pathname;
@@ -403,7 +423,6 @@ static struct kretprobe krp_security_inode_rename = {
 
 //==================================
 struct krp_security_inode_unlink_rmdir_data {
-	struct inode *dir;
         struct dentry *dentry;
 };
 
@@ -415,19 +434,15 @@ static int entry_handler_security_inode_unlink_rmdir(struct kretprobe_instance *
 		return 1;	/* Skip kernel threads */
 
 	data = (struct krp_security_inode_unlink_rmdir_data *)ri->data;
-        data->dir = (struct inode *)regs->di;
         data->dentry = (struct dentry *)regs->si;
 	return 0;
 }
 
 static int handler_security_inode_unlink_rmdir(struct kretprobe_instance *ri, struct pt_regs *regs) {
         struct krp_security_inode_unlink_rmdir_data *data = (struct krp_security_inode_unlink_rmdir_data *)ri->data;
-        struct inode *dir = data->dir;
         struct dentry *dentry = data->dentry;
 
-        unsigned long inode = d_backing_inode(dentry)->i_ino;
-
-        if (is_inode_protected(inode)) {
+        if (is_any_parent_protected(dentry)) {
                 char path_buf[PATH_MAX];
                 char *pathname;
 
@@ -464,6 +479,10 @@ static struct kretprobe krp_security_inode_rmdir = {
 static struct kretprobe *my_kretprobes[] = {
     &krp_security_file_open,
     &krp_security_inode_rename,
+    //TODO &krp_security_inode_create,
+    //TODO &krp_security_inode_link,
+    //TODO &krp_security_inode_symlink,
+    //TODO &krp_security_inode_mkdir,
     &krp_security_inode_unlink,
     &krp_security_inode_rmdir,
 };
