@@ -114,8 +114,8 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
 #define AUDIT if(1)
 
-static int the_refmon_reconf = RECONF_ENABLED;// this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
-module_param(the_refmon_reconf,int,0660);
+static int the_refmon_reconf = RECONF_ENABLED;//starting as REC-OFF 
+module_param(the_refmon_reconf,int,0660); //NB:] this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
 
 static unsigned char the_refmon_secret[MAX_PASSW_LEN]; // +1 for null terminator
 module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
@@ -207,12 +207,12 @@ static int is_path_protected(const char *kern_path_str) {
 }
 
 /**
- * Check if a given file, identified by its inode number, is protected.
+ * Check if a given inode corresponds to a protected file.
  * 
- * @param inode_num The inode number of the file to check.
- * @return 1 if the file is protected, 0 otherwise.
+ * @param inode_num The inode number to check.
+ * @return 1 if the inode is protected, 0 otherwise.
  */
-static int is_file_protected(unsigned long inode_num) {
+static int is_inode_protected(unsigned long inode_num) {
     refmon_path *entry;
 
     list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
@@ -291,83 +291,223 @@ static void log_message(enum log_level level, const char *fmt, ...) {
 }
 
 //==================================
-struct kretprobe_data {
+struct krp_security_file_open_data {
 	struct file * file;
 };
 
 static int entry_handler_security_file_open(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	struct kretprobe_data *data;
+	struct krp_security_file_open_data *data;
 
 	if (!current->mm)
 		return 1;	/* Skip kernel threads */
 
-	data = (struct kretprobe_data *)ri->data;
+	data = (struct krp_security_file_open_data *)ri->data;
 	data->file = (struct file *)regs->di;
 	return 0;
 }
 
 static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_regs *regs) {
-        struct kretprobe_data *data = (struct kretprobe_data *)ri->data;
+        struct krp_security_file_open_data *data = (struct krp_security_file_open_data *)ri->data;
         struct file* file = data->file;
 
-        if (file && reference_monitor.state == ON) {
+        if (file) {
                 if (file->f_mode & FMODE_WRITE) {
                         refmon_path *entry;
                         struct path file_path = file->f_path;
+                        char *pathname;
+                        char path_buf[PATH_MAX];
+                        pathname = d_path(&file_path, path_buf, PATH_MAX);
                         unsigned long accessed_inode = file_inode(file)->i_ino;
-                        char *file_path_buff = kmalloc(PATH_MAX, GFP_KERNEL);
-                        if (!file_path_buff) {
-                                log_message(LOG_ERR, "FAILED TO BLOCK POTENTIALLY ILLEGAL ACCESS! (Couldn't allocate buffer to store pathname.)\n", file_path);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,16,0)
-                                regs->ax = (unsigned long) -ENOMEM;
-#else
-                                regs_set_return_value(regs, -ENOMEM);
-#endif
-                                return 0;
-                        }
-                        char *pathname = d_path(&file_path, file_path_buff, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
-                        if(is_file_protected(accessed_inode)){
-                                log_message(LOG_INFO, "FILE '%s' WAS ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS!\n", pathname);
+                        if(is_inode_protected(accessed_inode)){
+                                log_message(LOG_INFO, "FILE '%s' WAS ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n", pathname);
                                 spin_unlock(&reference_monitor.lock);
-                                kfree(file_path_buff);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,16,0)
                                 regs->ax = (unsigned long) -EACCES;
-#else
-                                regs_set_return_value(regs, -EACCES);
-#endif
                                 return 0;
                         }
                         spin_unlock(&reference_monitor.lock);
-                        kfree(file_path_buff);
                 }
         }
         return 0; 
 }
 
 
-
-static struct kretprobe krp = {
+static struct kretprobe krp_security_file_open = {
         .kp.symbol_name     = "security_file_open",
         .handler            = handler_security_file_open,
         .entry_handler      = entry_handler_security_file_open,
-        .data_size          = sizeof(struct kretprobe_data),
+        .data_size          = sizeof(struct krp_security_file_open_data),
 };
 
-void register_my_kretprobe(void) {
-        int ret = register_kretprobe(&krp);
-        if (ret < 0) {
-                log_message(LOG_ERR, "kretprobe registration failed: %d\n",  ret);
-        } else {
-                log_message(LOG_INFO, "kretprobe registered\n");
-        }
+//==================================
+struct krp_security_inode_rename_data {
+	struct inode *old_dir;
+        struct dentry *old_dentry;
+        struct inode *new_dir; 
+        struct dentry *new_dentry;
+};
+
+static int entry_handler_security_inode_rename(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct krp_security_inode_rename_data *data;
+
+	if (!current->mm)
+		return 1;	/* Skip kernel threads */
+
+	data = (struct krp_security_inode_rename_data *)ri->data;
+        data->old_dir = (struct inode *)regs->di;
+        data->old_dentry = (struct dentry *)regs->si;
+        data->new_dir = (struct inode *)regs->dx; 
+        data->new_dentry = (struct dentry *)regs->cx;
+	return 0;
 }
 
-void unregister_my_kretprobe(void) {
-        unregister_kretprobe(&krp);
-        log_message(LOG_INFO, "kretprobe unregistered\n");
+static int handler_security_inode_rename(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct krp_security_inode_rename_data *data = (struct krp_security_inode_rename_data *)ri->data;
+        struct inode *old_dir = data->old_dir;
+        struct dentry *old_dentry = data->old_dentry;
+        struct inode *new_dir = data->new_dir; 
+        struct dentry *new_dentry = data->new_dentry;
+
+        unsigned long old_file_inode = d_backing_inode(old_dentry)->i_ino;
+        unsigned long new_file_inode = d_is_positive(new_dentry) ? d_backing_inode(new_dentry)->i_ino : 0;
+
+        if (is_inode_protected(old_file_inode) || (new_file_inode && is_inode_protected(new_file_inode))) {
+                char old_path_buf[PATH_MAX];
+                char new_path_buf[PATH_MAX];
+                char *old_pathname, *new_pathname;
+
+                old_pathname = dentry_path_raw(old_dentry, old_path_buf, PATH_MAX);
+                new_pathname = dentry_path_raw(new_dentry, new_path_buf, PATH_MAX);
+
+                if (!IS_ERR(old_pathname) && !IS_ERR(new_pathname)) {
+                        log_message(LOG_INFO, "ATTEMPTED RENAMING OF FILE/DIR from '%s' to '%s' WHILE ONE OR BOTH PATHS ARE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n", old_pathname, new_pathname);
+                } else {
+                        log_message(LOG_INFO, "ATTEMPTED RENAMING OF FILE/DIR WHILE ONE OR BOTH PATHS ARE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n");
+                }
+                regs->ax = (unsigned long) -EACCES;
+                return 0;
+        }
+
+        return 0;
 }
+
+
+static struct kretprobe krp_security_inode_rename = {
+        .kp.symbol_name     = "security_inode_rename",
+        .handler            = handler_security_inode_rename,
+        .entry_handler      = entry_handler_security_inode_rename,
+        .data_size          = sizeof(struct krp_security_inode_rename_data),
+};
+
+//==================================
+struct krp_security_inode_unlink_rmdir_data {
+	struct inode *dir;
+        struct dentry *dentry;
+};
+
+static int entry_handler_security_inode_unlink_rmdir(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct krp_security_inode_unlink_rmdir_data *data;
+
+	if (!current->mm)
+		return 1;	/* Skip kernel threads */
+
+	data = (struct krp_security_inode_unlink_rmdir_data *)ri->data;
+        data->dir = (struct inode *)regs->di;
+        data->dentry = (struct dentry *)regs->si;
+	return 0;
+}
+
+static int handler_security_inode_unlink_rmdir(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct krp_security_inode_unlink_rmdir_data *data = (struct krp_security_inode_unlink_rmdir_data *)ri->data;
+        struct inode *dir = data->dir;
+        struct dentry *dentry = data->dentry;
+
+        unsigned long inode = d_backing_inode(dentry)->i_ino;
+
+        if (is_inode_protected(inode)) {
+                char path_buf[PATH_MAX];
+                char *pathname;
+
+                pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
+
+                if (!IS_ERR(pathname)) {
+                        log_message(LOG_INFO, "ATTEMPTED DELETION OF FILE/DIR '%s' WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n", pathname);
+                } else {
+                        log_message(LOG_INFO, "ATTEMPTED DELETION OF FILE/DIR WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n");
+                }
+                regs->ax = (unsigned long) -EACCES;
+                return 0;
+        }
+
+        return 0;
+}
+
+
+static struct kretprobe krp_security_inode_unlink = {
+        .kp.symbol_name     = "security_inode_unlink",
+        .handler            = handler_security_inode_unlink_rmdir,
+        .entry_handler      = entry_handler_security_inode_unlink_rmdir,
+        .data_size          = sizeof(struct krp_security_inode_unlink_rmdir_data),
+};
+
+static struct kretprobe krp_security_inode_rmdir = {
+        .kp.symbol_name     = "security_inode_rmdir",
+        .handler            = handler_security_inode_unlink_rmdir,
+        .entry_handler      = entry_handler_security_inode_unlink_rmdir,
+        .data_size          = sizeof(struct krp_security_inode_unlink_rmdir_data),
+};
+//=================================================
+
+static struct kretprobe *my_kretprobes[] = {
+    &krp_security_file_open,
+    &krp_security_inode_rename,
+    &krp_security_inode_unlink,
+    &krp_security_inode_rmdir,
+};
+
+
+void register_my_kretprobes(void) {
+    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        int ret = register_kretprobe(my_kretprobes[i]);
+        if (ret < 0) {
+            log_message(LOG_ERR, "kretprobe '%s' registration failed: %d\n", my_kretprobes[i]->kp.symbol_name, ret);
+        } else {
+            log_message(LOG_INFO, "kretprobe '%s' registered\n", my_kretprobes[i]->kp.symbol_name);
+        }
+    }
+}
+
+
+void unregister_my_kretprobes(void) {
+    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        unregister_kretprobe(my_kretprobes[i]);
+        log_message(LOG_INFO, "kretprobe '%s' unregistered\n", my_kretprobes[i]->kp.symbol_name);
+    }
+}
+
+
+void enable_my_kretprobes(void) {
+    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        int ret = enable_kretprobe(my_kretprobes[i]);
+        if (ret < 0) {
+            log_message(LOG_ERR, "Failed to enable kretprobe '%s': %d\n", my_kretprobes[i]->kp.symbol_name, ret);
+        } else {
+            log_message(LOG_INFO, "Kretprobe '%s' enabled\n", my_kretprobes[i]->kp.symbol_name);
+        }
+    }
+}
+
+
+void disable_my_kretprobes(void) {
+    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        disable_kretprobe(my_kretprobes[i]);
+        log_message(LOG_INFO, "Kretprobe '%s' disabled\n", my_kretprobes[i]->kp.symbol_name);
+    }
+}
+
 
 //==================================
 
@@ -401,6 +541,11 @@ static void update_state(state_t new_state, int reconf){
                 }
         }else{
                 if (reference_monitor.state != new_state) {
+                        if(new_state == ON){
+                                enable_my_kretprobes();
+                        }else{
+                                disable_my_kretprobes();
+                        }
                         reference_monitor.state = new_state;
                         if (the_refmon_reconf != reconf) {
                                 the_refmon_reconf = reconf;
@@ -546,7 +691,6 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
 
         spin_lock(&reference_monitor.lock);
 
-        // Common checks
         if(CURRENT_EUID != 0) {
                 log_message(LOG_ERR, "Current EUID is not 0.\n");
                 ret = -1;
@@ -560,7 +704,6 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                 ret = -1;
                 goto exit;
         } else {
-                // Action-specific logic
                 switch (action) {
                 case REFMON_ACTION_PROTECT:
                         switch (is_path_protected(kernel_path))
@@ -635,7 +778,7 @@ int init_module(void) {
         log_message(LOG_INFO, "starting up!\n");
 
         //init reference monitor struct
-        reference_monitor.state = ON;
+        reference_monitor.state = OFF; //starting as REC-OFF
         spin_lock_init(&reference_monitor.lock);
         INIT_LIST_HEAD(&reference_monitor.protected_paths);
         reference_monitor.password_digest = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
@@ -671,8 +814,9 @@ int init_module(void) {
         }
         protect_memory();
         log_message(LOG_INFO, "all new system-calls correctly installed on sys-call table\n");
-        register_my_kretprobe();
+        register_my_kretprobes();
         log_message(LOG_INFO, "all kretprobes correctly registered\n");
+        disable_my_kretprobes(); //starting as REC-OFF
 
         return 0;
 
@@ -689,6 +833,6 @@ void cleanup_module(void) {
         protect_memory();
         log_message(LOG_INFO, "sys-call table restored to its original content\n");
 
-        unregister_my_kretprobe();
+        unregister_my_kretprobes();
         log_message(LOG_INFO, "all kretprobes correctly unregistered\n");
 }
