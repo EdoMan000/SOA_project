@@ -104,4 +104,3 @@ enable:
 
 disable:
 	$(call set_parameter,the_refmon_reconf,0)
-

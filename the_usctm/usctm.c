@@ -164,8 +164,6 @@ int free_entries[MAX_FREE];
 module_param_array(free_entries,int,NULL,0660);//default array size already known - here we expose what entries are free
 
 
-#define SYS_CALL_INSTALL
-
 #ifdef SYS_CALL_INSTALL
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 __SYSCALL_DEFINEx(2, _trial, unsigned long, A, unsigned long, B){
