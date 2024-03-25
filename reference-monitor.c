@@ -216,41 +216,48 @@ static int is_path_protected(const char *kern_path_str) {
  * @return 1 if the inode is protected, 0 otherwise.
  */
 static int is_inode_protected(unsigned long inode_num) {
-    refmon_path *entry;
+        refmon_path *entry;
 
-    list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
-        if (entry->inode == inode_num) {
-            return 1; 
+        list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+                if (entry->inode == inode_num) {
+                return 1; 
+                }
         }
-    }
-    return 0; 
+        return 0; 
 }
 
-
 /**
- * Check if any parent directory of the given dentry is protected.
+ * Check if a given dentry corresponds to a protected file or it is situated in a protected path.
  * 
- * @param dentry The dentry for which to check the parent directories.
- * @return 1 if any parent directory is protected, 0 otherwise.
+ * @param dentry The dentry to check.
+ * @return 1 if the dentry or its path is protected, 0 otherwise.
  */
-static int is_any_parent_protected(struct dentry *dentry) {
-    struct dentry *current_dentry = dget(dentry); 
-    struct dentry *parent_dentry;
-    int is_protected = 0;
+static int is_dentry_protected(struct dentry *dentry) {
+    struct dentry *current_dentry = dentry;
 
-    while (!IS_ROOT(current_dentry)) {
-        if (is_inode_protected(d_backing_inode(current_dentry)->i_ino)) {
-            is_protected = 1;
-            break; 
+    do {
+        unsigned long inode_num = d_is_positive(current_dentry) ? d_inode(current_dentry)->i_ino : 0;
+
+        if (inode_num && is_inode_protected(inode_num)) {
+            return 1; 
         }
 
-        parent_dentry = dget_parent(current_dentry);
-        dput(current_dentry); 
-        current_dentry = parent_dentry; 
+        if (!IS_ROOT(current_dentry)) {
+            struct dentry *parent_dentry = dget_parent(current_dentry);
+
+            if (current_dentry != dentry) {
+                dput(current_dentry);
+            }
+
+            current_dentry = parent_dentry;
+        }
+    } while (!IS_ROOT(current_dentry));
+
+    if (current_dentry != dentry) {
+        dput(current_dentry);
     }
 
-    dput(current_dentry); 
-    return is_protected;
+    return 0; 
 }
 
 
@@ -349,8 +356,8 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         struct dentry *dentry = file->f_path.dentry;
                         pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
-                        if(is_any_parent_protected(dentry)){
-                                log_message(LOG_INFO, "FILE '%s' WAS ACCESSED WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n", pathname);
+                        if(is_dentry_protected(dentry)){
+                                log_message(LOG_INFO, "DENIED ACCESS TO FILE '%s' AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
@@ -393,7 +400,7 @@ static int handler_security_inode_rename(struct kretprobe_instance *ri, struct p
         struct dentry *old_dentry = data->old_dentry;
         struct dentry *new_dentry = data->new_dentry;
 
-        if (is_any_parent_protected(old_dentry) || is_any_parent_protected(new_dentry)) {
+        if (is_dentry_protected(old_dentry) || is_dentry_protected(new_dentry)) {
                 char old_path_buf[PATH_MAX];
                 char new_path_buf[PATH_MAX];
                 char *old_pathname, *new_pathname;
@@ -402,9 +409,9 @@ static int handler_security_inode_rename(struct kretprobe_instance *ri, struct p
                 new_pathname = dentry_path_raw(new_dentry, new_path_buf, PATH_MAX);
 
                 if (!IS_ERR(old_pathname) && !IS_ERR(new_pathname)) {
-                        log_message(LOG_INFO, "ATTEMPTED RENAMING OF FILE/DIR from '%s' to '%s' WHILE ONE OR BOTH PATHS ARE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n", old_pathname, new_pathname);
+                        log_message(LOG_INFO, "DENIED RENAMING OF FILE/DIR FROM '%s' TO '%s' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", old_pathname, new_pathname);
                 } else {
-                        log_message(LOG_INFO, "ATTEMPTED RENAMING OF FILE/DIR WHILE ONE OR BOTH PATHS ARE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n");
+                        log_message(LOG_INFO, "DENIED RENAMING OF FILE/DIR AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -442,16 +449,16 @@ static int handler_security_inode_unlink_rmdir(struct kretprobe_instance *ri, st
         struct krp_security_inode_unlink_rmdir_data *data = (struct krp_security_inode_unlink_rmdir_data *)ri->data;
         struct dentry *dentry = data->dentry;
 
-        if (is_any_parent_protected(dentry)) {
+        if (is_dentry_protected(dentry)) {
                 char path_buf[PATH_MAX];
                 char *pathname;
 
                 pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
 
                 if (!IS_ERR(pathname)) {
-                        log_message(LOG_INFO, "ATTEMPTED DELETION OF FILE/DIR '%s' WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n", pathname);
+                        log_message(LOG_INFO, "DENIED DELETION OF FILE/DIR '%s' AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
                 } else {
-                        log_message(LOG_INFO, "ATTEMPTED DELETION OF FILE/DIR WHILE BEING PROTECTED! ABORTING OPERATION AND REGISTERING ILLEGAL ACCESS.\n");
+                        log_message(LOG_INFO, "DENIED DELETION OF FILE/DIR AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -474,17 +481,192 @@ static struct kretprobe krp_security_inode_rmdir = {
         .entry_handler      = entry_handler_security_inode_unlink_rmdir,
         .data_size          = sizeof(struct krp_security_inode_unlink_rmdir_data),
 };
+
+//==================================
+struct krp_security_inode_create_mkdir_data {
+        struct dentry *dentry;
+};
+
+static int entry_handler_security_inode_create_mkdir(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct krp_security_inode_create_mkdir_data *data;
+
+	if (!current->mm)
+		return 1;	/* Skip kernel threads */
+
+	data = (struct krp_security_inode_create_mkdir_data *)ri->data;
+        data->dentry = (struct dentry *)regs->si;
+	return 0;
+}
+
+static int handler_security_inode_create_mkdir(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct krp_security_inode_create_mkdir_data *data = (struct krp_security_inode_create_mkdir_data *)ri->data;
+        struct dentry *dentry = data->dentry;
+
+        if (is_dentry_protected(dentry)) {
+                char path_buf[PATH_MAX];
+                char *pathname;
+
+                pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
+
+                if (!IS_ERR(pathname)) {
+                        log_message(LOG_INFO, "DENIED CREATION OF FILE/DIR '%s' AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
+                } else {
+                        log_message(LOG_INFO, "DENIED CREATION OF FILE/DIR AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                }
+                regs->ax = (unsigned long) -EACCES;
+                return 0;
+        }
+
+        return 0;
+}
+
+
+static struct kretprobe krp_security_inode_create = {
+        .kp.symbol_name     = "security_inode_create",
+        .handler            = handler_security_inode_create_mkdir,
+        .entry_handler      = entry_handler_security_inode_create_mkdir,
+        .data_size          = sizeof(struct krp_security_inode_create_mkdir_data),
+};
+
+static struct kretprobe krp_security_inode_mkdir = {
+        .kp.symbol_name     = "security_inode_mkdir",
+        .handler            = handler_security_inode_create_mkdir,
+        .entry_handler      = entry_handler_security_inode_create_mkdir,
+        .data_size          = sizeof(struct krp_security_inode_create_mkdir_data),
+};
+
+//==================================
+struct krp_security_inode_link_data {
+        struct dentry *old_dentry;
+        struct dentry *new_dentry;
+};
+
+static int entry_handler_security_inode_link(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct krp_security_inode_link_data *data;
+
+	if (!current->mm)
+		return 1;	/* Skip kernel threads */
+
+	data = (struct krp_security_inode_link_data *)ri->data;
+        data->old_dentry = (struct dentry *)regs->di;
+        data->new_dentry = (struct dentry *)regs->dx;
+	return 0;
+}
+
+static int handler_security_inode_link(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct krp_security_inode_link_data *data = (struct krp_security_inode_link_data *)ri->data;
+        struct dentry *old_dentry = data->old_dentry;
+        struct dentry *new_dentry = data->new_dentry;
+
+        if (is_dentry_protected(old_dentry) || is_dentry_protected(new_dentry)) {
+                char old_path_buf[PATH_MAX];
+                char new_path_buf[PATH_MAX];
+                char *old_pathname, *new_pathname;
+
+                old_pathname = dentry_path_raw(old_dentry, old_path_buf, PATH_MAX);
+                new_pathname = dentry_path_raw(new_dentry, new_path_buf, PATH_MAX);
+
+                if (!IS_ERR(old_pathname) && !IS_ERR(new_pathname)) {
+                        log_message(LOG_INFO, "DENIED CREATION OF HARD-LINK '%s' TO FILE '%s' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", new_pathname, old_pathname);
+                } else {
+                        log_message(LOG_INFO, "DENIED CREATION OF HARD-LINK TO FILE AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                }
+                regs->ax = (unsigned long) -EACCES;
+                return 0;
+        }
+
+        return 0;
+}
+
+
+static struct kretprobe krp_security_inode_link = {
+        .kp.symbol_name     = "security_inode_link",
+        .handler            = handler_security_inode_link,
+        .entry_handler      = entry_handler_security_inode_link,
+        .data_size          = sizeof(struct krp_security_inode_link_data),
+};
+
+//==================================
+struct krp_security_inode_symlink_data {
+        struct dentry *dentry;
+        char *old_name;
+};
+
+static int entry_handler_security_inode_symlink(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	struct krp_security_inode_symlink_data *data;
+
+	if (!current->mm)
+		return 1;	/* Skip kernel threads */
+
+	data = (struct krp_security_inode_symlink_data *)ri->data;
+        data->dentry = (struct dentry *)regs->si;
+        data->old_name = (char *)regs->dx;
+	return 0;
+}
+
+const char *resolve_symlink_target(struct dentry *dentry) {
+        struct delayed_call done;
+
+        const char *target = vfs_get_link(dentry, &done);
+
+        // // Perform cleanup if necessary. This step is crucial to avoid memory leaks.
+        // if (done.fn) {
+        //         do_delayed_call(&done);
+        // }
+
+        return target;
+}
+
+
+static int handler_security_inode_symlink(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct krp_security_inode_symlink_data *data = (struct krp_security_inode_symlink_data *)ri->data;
+        struct dentry *dentry = data->dentry;
+        char *old_name = data->old_name;
+
+        //TODO resolve dentry of target file to include it
+
+        // if (is_dentry_protected(dentry) || is_dentry_protected(target_file_dentry)) {
+        if (is_dentry_protected(dentry)){
+                char path_buf[PATH_MAX];
+                char target_file_path_buf[PATH_MAX];
+                char *pathname, *target_file_pathname;
+
+                pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
+                // target_file_pathname = dentry_path_raw(target_file_dentry, target_file_path_buf, PATH_MAX);
+
+                // if (!IS_ERR(pathname) && !IS_ERR(target_file_pathname)) {
+                if (!IS_ERR(pathname)){        
+                        log_message(LOG_INFO, "DENIED CREATION OF SYMLINK '%s' TO FILE '' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
+                } else {
+                        log_message(LOG_INFO, "DENIED CREATION OF SYMLINK TO FILE AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                }
+                regs->ax = (unsigned long) -EACCES;
+                return 0;
+        }
+        return 0;
+}
+
+
+static struct kretprobe krp_security_inode_symlink = {
+        .kp.symbol_name     = "security_inode_symlink",
+        .handler            = handler_security_inode_symlink,
+        .entry_handler      = entry_handler_security_inode_symlink,
+        .data_size          = sizeof(struct krp_security_inode_symlink_data),
+};
 //=================================================
 
 static struct kretprobe *my_kretprobes[] = {
     &krp_security_file_open,
     &krp_security_inode_rename,
-    //TODO &krp_security_inode_create,
-    //TODO &krp_security_inode_link,
-    //TODO &krp_security_inode_symlink,
-    //TODO &krp_security_inode_mkdir,
     &krp_security_inode_unlink,
     &krp_security_inode_rmdir,
+    &krp_security_inode_create,
+    &krp_security_inode_mkdir,
+    &krp_security_inode_link,
+    &krp_security_inode_symlink,
 };
 
 
