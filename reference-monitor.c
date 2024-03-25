@@ -22,6 +22,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
+#include <linux/sched.h>
 #include <linux/mount.h>    
 #include <linux/dcache.h> 
 #include <linux/cdev.h>
@@ -200,8 +201,8 @@ static int is_path_protected(const char *kern_path_str) {
 
         list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
                 if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
-                ret = 1;
-                break;
+                        ret = 1;
+                        break;
                 }
         }
         path_put(&path_obj);
@@ -220,7 +221,7 @@ static int is_inode_protected(unsigned long inode_num) {
 
         list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
                 if (entry->inode == inode_num) {
-                return 1; 
+                        return 1; 
                 }
         }
         return 0; 
@@ -233,31 +234,31 @@ static int is_inode_protected(unsigned long inode_num) {
  * @return 1 if the dentry or its path is protected, 0 otherwise.
  */
 static int is_dentry_protected(struct dentry *dentry) {
-    struct dentry *current_dentry = dentry;
+        struct dentry *current_dentry = dentry;
 
-    do {
-        unsigned long inode_num = d_is_positive(current_dentry) ? d_inode(current_dentry)->i_ino : 0;
+        do {
+                unsigned long inode_num = d_is_positive(current_dentry) ? d_inode(current_dentry)->i_ino : 0;
 
-        if (inode_num && is_inode_protected(inode_num)) {
-            return 1; 
-        }
+                if (inode_num && is_inode_protected(inode_num)) {
+                        return 1; 
+                }
 
-        if (!IS_ROOT(current_dentry)) {
-            struct dentry *parent_dentry = dget_parent(current_dentry);
+                if (!IS_ROOT(current_dentry)) {
+                        struct dentry *parent_dentry = dget_parent(current_dentry);
 
-            if (current_dentry != dentry) {
+                        if (current_dentry != dentry) {
+                                dput(current_dentry);
+                        }
+
+                        current_dentry = parent_dentry;
+                }
+        } while (!IS_ROOT(current_dentry));
+
+        if (current_dentry != dentry) {
                 dput(current_dentry);
-            }
-
-            current_dentry = parent_dentry;
         }
-    } while (!IS_ROOT(current_dentry));
 
-    if (current_dentry != dentry) {
-        dput(current_dentry);
-    }
-
-    return 0; 
+        return 0; 
 }
 
 
@@ -607,39 +608,37 @@ static int entry_handler_security_inode_symlink(struct kretprobe_instance *ri, s
 	return 0;
 }
 
-const char *resolve_symlink_target(struct dentry *dentry) {
-        struct delayed_call done;
-
-        const char *target = vfs_get_link(dentry, &done);
-
-        // // Perform cleanup if necessary. This step is crucial to avoid memory leaks.
-        // if (done.fn) {
-        //         do_delayed_call(&done);
-        // }
-
-        return target;
-}
-
-
 static int handler_security_inode_symlink(struct kretprobe_instance *ri, struct pt_regs *regs) {
         struct krp_security_inode_symlink_data *data = (struct krp_security_inode_symlink_data *)ri->data;
         struct dentry *dentry = data->dentry;
         char *old_name = data->old_name;
 
-        //TODO resolve dentry of target file to include it
+        struct path path;
+        int err = kern_path(old_name, LOOKUP_FOLLOW, &path);
+        if (err) {
+                log_message(LOG_ERR, "CAN'T RESOLVE PATH FOR '%s'\n", old_name);
+                return 0;
+        }
 
-        // if (is_dentry_protected(dentry) || is_dentry_protected(target_file_dentry)) {
-        if (is_dentry_protected(dentry)){
+        struct dentry *target_file_dentry = path.dentry;
+        dget(target_file_dentry);
+        path_put(&path); 
+
+        char target_file_path_buf[PATH_MAX];
+        char *target_file_pathname;
+        target_file_pathname = dentry_path_raw(target_file_dentry, target_file_path_buf, PATH_MAX);
+        log_message(LOG_INFO, "RESOLVED ABSOLUTE PATH IS '%s'\n", target_file_pathname);
+
+        if (is_dentry_protected(dentry) || is_dentry_protected(target_file_dentry)) {
                 char path_buf[PATH_MAX];
                 char target_file_path_buf[PATH_MAX];
                 char *pathname, *target_file_pathname;
 
                 pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
-                // target_file_pathname = dentry_path_raw(target_file_dentry, target_file_path_buf, PATH_MAX);
+                target_file_pathname = dentry_path_raw(target_file_dentry, target_file_path_buf, PATH_MAX);
 
-                // if (!IS_ERR(pathname) && !IS_ERR(target_file_pathname)) {
-                if (!IS_ERR(pathname)){        
-                        log_message(LOG_INFO, "DENIED CREATION OF SYMLINK '%s' TO FILE '' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
+                if (!IS_ERR(pathname) && !IS_ERR(target_file_pathname)) {
+                        log_message(LOG_INFO, "DENIED CREATION OF SYMLINK '%s' TO FILE '%s' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname, target_file_pathname);
                 } else {
                         log_message(LOG_INFO, "DENIED CREATION OF SYMLINK TO FILE AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
                 }
@@ -659,46 +658,46 @@ static struct kretprobe krp_security_inode_symlink = {
 //=================================================
 
 static struct kretprobe *my_kretprobes[] = {
-    &krp_security_file_open,
-    &krp_security_inode_rename,
-    &krp_security_inode_unlink,
-    &krp_security_inode_rmdir,
-    &krp_security_inode_create,
-    &krp_security_inode_mkdir,
-    &krp_security_inode_link,
-    &krp_security_inode_symlink,
+        &krp_security_file_open,
+        &krp_security_inode_rename,
+        &krp_security_inode_unlink,
+        &krp_security_inode_rmdir,
+        &krp_security_inode_create,
+        &krp_security_inode_mkdir,
+        &krp_security_inode_link,
+        &krp_security_inode_symlink,
 };
 
 
 void register_my_kretprobes(void) {
-    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
-        int ret = register_kretprobe(my_kretprobes[i]);
-        if (ret < 0) {
-            log_message(LOG_ERR, "kretprobe '%s' registration failed: %d\n", my_kretprobes[i]->kp.symbol_name, ret);
-        } else {
-            log_message(LOG_INFO, "kretprobe '%s' registered\n", my_kretprobes[i]->kp.symbol_name);
+        for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+                int ret = register_kretprobe(my_kretprobes[i]);
+                if (ret < 0) {
+                        log_message(LOG_ERR, "kretprobe '%s' registration failed: %d\n", my_kretprobes[i]->kp.symbol_name, ret);
+                } else {
+                        log_message(LOG_INFO, "kretprobe '%s' registered\n", my_kretprobes[i]->kp.symbol_name);
+                }
         }
-    }
 }
 
 
 void unregister_my_kretprobes(void) {
-    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
-        unregister_kretprobe(my_kretprobes[i]);
-        log_message(LOG_INFO, "kretprobe '%s' unregistered\n", my_kretprobes[i]->kp.symbol_name);
-    }
+        for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+                unregister_kretprobe(my_kretprobes[i]);
+                log_message(LOG_INFO, "kretprobe '%s' unregistered\n", my_kretprobes[i]->kp.symbol_name);
+        }
 }
 
 
 void enable_my_kretprobes(void) {
-    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
-        int ret = enable_kretprobe(my_kretprobes[i]);
-        if (ret < 0) {
-            log_message(LOG_ERR, "Failed to enable kretprobe '%s': %d\n", my_kretprobes[i]->kp.symbol_name, ret);
-        } else {
-            log_message(LOG_INFO, "Kretprobe '%s' enabled\n", my_kretprobes[i]->kp.symbol_name);
+        for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+                int ret = enable_kretprobe(my_kretprobes[i]);
+                if (ret < 0) {
+                        log_message(LOG_ERR, "Failed to enable kretprobe '%s': %d\n", my_kretprobes[i]->kp.symbol_name, ret);
+                } else {
+                        log_message(LOG_INFO, "Kretprobe '%s' enabled\n", my_kretprobes[i]->kp.symbol_name);
+                }
         }
-    }
 }
 
 
