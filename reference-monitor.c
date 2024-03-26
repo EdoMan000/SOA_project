@@ -221,9 +221,35 @@ static void write_audit_log(struct work_struct *work) {
         ktime_get_real_ts64(&ts);
         time64_to_tm(ts.tv_sec, 1, &tm); // Assuming UTC+1 time, hence the offset is 1
         snprintf(timestamp, sizeof(timestamp), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+        char paths[PATH_MAX*2 + 64];
+        if (strcmp(log->description, "DENIED WRITE_ON") == 0) {
+                len = snprintf(paths, sizeof(paths), "File: %s", log->path1);
+        } else if (strcmp(log->description, "DENIED RENAMING") == 0) {
+                len = snprintf(paths, sizeof(paths), "File(old name): %s\nFile(new name): %s", log->path1, log->path2);
+        } else if (strcmp(log->description, "DENIED DELETION") == 0) {
+                len = snprintf(paths, sizeof(paths), "File: %s", log->path1);
+        } else if (strcmp(log->description, "DENIED CREATION") == 0) {
+                len = snprintf(paths, sizeof(paths), "File: %s", log->path1);
+        } else if (strcmp(log->description, "DENIED HARD-LNK") == 0) {
+                len = snprintf(paths, sizeof(paths), "Hard Link: %s\nFile: %s", log->path1, log->path2);
+        } else if (strcmp(log->description, "DENIED SYMB-LNK") == 0) {
+                len = snprintf(paths, sizeof(paths), "Symbolic Link: %s\nFile: %s", log->path1, log->path2);
+        } else {
+                strcpy(paths, "No paths available."); 
+        }
+        //-----------------
         len = snprintf(NULL, 0,
-                "\n===================================\n[*] %s at %s [*]\n===================================\nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath1: %s\nPath2: %s\nProgram: %s\nHash(hex): %s\n",
-                log->description, timestamp, log->tgid, log->tid, log->uid, log->euid, log->path1, log->path2, log->program_pathname, hash_hex) + 1; // +1 for '\0'
+                "\n===========================================================================\n"
+                "[*] %s                                       | at %s [*]\n"
+                "===========================================================================\n"
+                "TGID: %d, TID: %d, UID: %u, EUID: %u\n"
+                "%s\n"
+                "PROGRAM: %s\n"
+                "HASH(hex): %s\n"
+                "===========================================================================\n",
+                log->description, timestamp, log->tgid, log->tid, log->uid, log->euid, 
+                paths, log->program_pathname, hash_hex) + 1; // +1 for '\0'
         log_entry = kmalloc(len, GFP_KERNEL);
         if (!log_entry) {
                 log_message(LOG_ERR, "Failed to allocate memory for log entry during deferred work...\n DESC was: '%s'\n", log->description);
@@ -232,9 +258,16 @@ static void write_audit_log(struct work_struct *work) {
                 return;
         }
         snprintf(log_entry, len,
-                "\n===================================\n[*] %s at %s [*]\n===================================\nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath1: %s\nPath2: %s\nProgram: %s\nHash(hex): %s\n",
-                log->description, timestamp, log->tgid, log->tid, log->uid, log->euid, log->path1, log->path2, log->program_pathname, hash_hex);
-
+                "\n===========================================================================\n"
+                "[*] %s                                       | at %s [*]\n"
+                "===========================================================================\n"
+                "TGID: %d, TID: %d, UID: %u, EUID: %u\n"
+                "%s\n"
+                "PROGRAM: %s\n"
+                "HASH(hex): %s\n"
+                "===========================================================================\n",
+                log->description, timestamp, log->tgid, log->tid, log->uid, log->euid, 
+                paths, log->program_pathname, hash_hex);
         // Write to the log file
         file = filp_open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0600);
         if (!IS_ERR(file)) {
@@ -292,12 +325,6 @@ void submit_audit_log_work(const char *description, const char *path1, const cha
                 return;
         }
         log->description = description;
-        if(path1 == NULL){
-                path1 = "Not available.";
-        }
-        if(path2 == NULL){
-                path2 = "Not available.";
-        }
         log->path1 = path1;
         log->path2 = path2;
         log->tgid = CURRENT_TGID;
@@ -744,8 +771,8 @@ static int handler_security_inode_link(struct kretprobe_instance *ri, struct pt_
                 new_pathname = dentry_path_raw(new_dentry, new_path_buf, PATH_MAX);
 
                 if (!IS_ERR(old_pathname) && !IS_ERR(new_pathname)) {
-                        //HARD_LINK -> new_pathname 
-                        //FILE -> old_pathname
+                        //HARD_LINK -> new_pathname 1
+                        //FILE -> old_pathname 2
                         old_pathname = kstrdup(old_pathname, GFP_KERNEL);
                         new_pathname = kstrdup(new_pathname, GFP_KERNEL);
                         submit_audit_log_work("DENIED HARD-LNK", new_pathname, old_pathname);
