@@ -612,22 +612,19 @@ static int handler_security_inode_symlink(struct kretprobe_instance *ri, struct 
         struct krp_security_inode_symlink_data *data = (struct krp_security_inode_symlink_data *)ri->data;
         struct dentry *dentry = data->dentry;
         char *old_name = data->old_name;
-
         struct path path;
+
         int err = kern_path(old_name, LOOKUP_FOLLOW, &path);
+        if (err == -ENOENT) {
+                err = kern_path(strcat(old_name, "~"), LOOKUP_FOLLOW, &path);
+        }
         if (err) {
-                log_message(LOG_ERR, "CAN'T RESOLVE PATH FOR '%s'\n", old_name);
-                return 0;
+                return 0; //don't care
         }
 
         struct dentry *target_file_dentry = path.dentry;
         dget(target_file_dentry);
         path_put(&path); 
-
-        char target_file_path_buf[PATH_MAX];
-        char *target_file_pathname;
-        target_file_pathname = dentry_path_raw(target_file_dentry, target_file_path_buf, PATH_MAX);
-        log_message(LOG_INFO, "RESOLVED ABSOLUTE PATH IS '%s'\n", target_file_pathname);
 
         if (is_dentry_protected(dentry) || is_dentry_protected(target_file_dentry)) {
                 char path_buf[PATH_MAX];
