@@ -224,19 +224,17 @@ static void write_audit_log(struct work_struct *work) {
 
         char paths[PATH_MAX*2 + 64];
         if (strcmp(log->description, "DENIED WRITE_ON") == 0) {
-                len = snprintf(paths, sizeof(paths), "File: %s", log->path1);
+                len = snprintf(paths, sizeof(paths), "FILE: %s\n", log->path1);
         } else if (strcmp(log->description, "DENIED RENAMING") == 0) {
-                len = snprintf(paths, sizeof(paths), "File(old name): %s\nFile(new name): %s", log->path1, log->path2);
+                len = snprintf(paths, sizeof(paths), "FILE(old name): %s\nFILE(new name): %s\n", log->path1, log->path2);
         } else if (strcmp(log->description, "DENIED DELETION") == 0) {
-                len = snprintf(paths, sizeof(paths), "File: %s", log->path1);
+                len = snprintf(paths, sizeof(paths), "FILE: %s\n", log->path1);
         } else if (strcmp(log->description, "DENIED CREATION") == 0) {
-                len = snprintf(paths, sizeof(paths), "File: %s", log->path1);
+                len = snprintf(paths, sizeof(paths), "FILE: %s\n", log->path1);
         } else if (strcmp(log->description, "DENIED HARD-LNK") == 0) {
-                len = snprintf(paths, sizeof(paths), "Hard Link: %s\nFile: %s", log->path1, log->path2);
+                len = snprintf(paths, sizeof(paths), "HARD LINK: %s\nFILE: %s\n", log->path1, log->path2);
         } else if (strcmp(log->description, "DENIED SYMB-LNK") == 0) {
-                len = snprintf(paths, sizeof(paths), "Symbolic Link: %s\nFile: %s", log->path1, log->path2);
-        } else {
-                strcpy(paths, "No paths available."); 
+                len = snprintf(paths, sizeof(paths), "SYMBOLIC LINK: %s\nFILE: %s\n", log->path1, log->path2);
         }
         //-----------------
         len = snprintf(NULL, 0,
@@ -244,7 +242,7 @@ static void write_audit_log(struct work_struct *work) {
                 "[*] %s                                       | at %s [*]\n"
                 "===========================================================================\n"
                 "TGID: %d, TID: %d, UID: %u, EUID: %u\n"
-                "%s\n"
+                "%s"
                 "PROGRAM: %s\n"
                 "HASH(hex): %s\n"
                 "===========================================================================\n",
