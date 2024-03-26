@@ -38,6 +38,7 @@
 #include <linux/version.h>
 #include <linux/interrupt.h>
 #include <linux/time.h>
+#include <linux/ktime.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
 #include <asm/page.h>
@@ -140,7 +141,9 @@ static void log_message(enum log_level level, const char *fmt, ...) {
 //===================================
 
 typedef struct _file_audit_log {
-        char *description;
+        const char *description;
+        const char *path1;
+        const char *path2;
         pid_t tgid;
         pid_t tid;
         uid_t uid;
@@ -158,8 +161,13 @@ static void write_audit_log(struct work_struct *work) {
         struct file *file;
         char *log_entry;
         char hash_hex[SHA256_DIGEST_SIZE * 2 + 1];
+        loff_t pos = 0; 
+        ssize_t read_size;
+        char *program_content;
+        loff_t program_size;
         struct timespec64 ts;
-        char timestamp[100];
+        struct tm tm;
+        char timestamp[9]; // HH:MM:SS\0
         int len;
 
         unsigned char *computed_hash = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
@@ -167,32 +175,65 @@ static void write_audit_log(struct work_struct *work) {
                 log_message(LOG_ERR, "Couldn't allocate memory to store computed hash of program content during deferred work...\n DESC was: '%s'\n", log->description);
                 return;
         }
-        //TODO hash the program content not the program pathname, this is just to test the other things
-        // if (compute_sha256(program_content, program_content_len, computed_hash)) {
-        if (compute_sha256(log->program_pathname, strlen(log->program_pathname), computed_hash)) {
+        //read the program content
+        file = filp_open(log->program_pathname, O_RDONLY, 0);
+        if (IS_ERR(file)) {
+                log_message(LOG_ERR, "Couldn't open file to read from program during deferred work...\n DESC was: '%s'\n", log->description);
                 kfree(computed_hash);
+                return;
+        }
+        program_size = vfs_llseek(file, 0, SEEK_END);
+        if (program_size < 0) {
+                log_message(LOG_ERR, "Failed to seek to the end of the program during deferred work...\n DESC was: '%s'\n", log->description);
+                kfree(computed_hash);
+                filp_close(file, NULL);
+                return;
+        }
+        vfs_llseek(file, 0, SEEK_SET);
+        program_content = kmalloc(program_size + 1, GFP_KERNEL);
+        if (!program_content) {
+                log_message(LOG_ERR, "Failed to allocate memory for program content during deferred work...\n DESC was: '%s'\n", log->description);
+                kfree(computed_hash);
+                filp_close(file, NULL);
+                return;
+        }
+        read_size = kernel_read(file, program_content, program_size, &pos);
+        if (read_size < 0) {
+                log_message(LOG_ERR, "Failed to read program content during deferred work...\n DESC was: '%s'\n", log->description);
+                kfree(computed_hash);
+                kfree(program_content);
+                filp_close(file, NULL);
+                return;
+        } else {
+                filp_close(file, NULL);
+                program_content[read_size] = '\0';
+        }
+        if (compute_sha256(program_content, program_size, computed_hash)) {
+                kfree(computed_hash);
+                kfree(program_content);
                 log_message(LOG_ERR, "Couldn't compute sha256 of program content during deferred work...\n DESC was: '%s'\n", log->description);
                 return;
         }
         // Compute hash hex string
         bin2hex(hash_hex, computed_hash, SHA256_DIGEST_SIZE);
         hash_hex[SHA256_DIGEST_SIZE * 2] = '\0';
-
-        ktime_get_real_ts64(&ts); // Get current timestamp
-        snprintf(timestamp, sizeof(timestamp), "%lld.%09ld", (long long)ts.tv_sec, ts.tv_nsec);
-
+        // Get current timestamp
+        ktime_get_real_ts64(&ts);
+        time64_to_tm(ts.tv_sec, 1, &tm); // Assuming UTC+1 time, hence the offset is 1
+        snprintf(timestamp, sizeof(timestamp), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
         len = snprintf(NULL, 0,
-                "\n==============================\n[*] %s [*]\n==============================: \nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath: %s\nHash(hex): %s\n",
-                log->description, log->tgid, log->tid, log->uid, log->euid, log->program_pathname, hash_hex) + 1; // +1 for '\0'
+                "\n===================================\n[*] %s at %s [*]\n===================================\nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath1: %s\nPath2: %s\nProgram: %s\nHash(hex): %s\n",
+                log->description, timestamp, log->tgid, log->tid, log->uid, log->euid, log->path1, log->path2, log->program_pathname, hash_hex) + 1; // +1 for '\0'
         log_entry = kmalloc(len, GFP_KERNEL);
         if (!log_entry) {
                 log_message(LOG_ERR, "Failed to allocate memory for log entry during deferred work...\n DESC was: '%s'\n", log->description);
                 kfree(computed_hash);
+                kfree(program_content);
                 return;
         }
         snprintf(log_entry, len,
-                "\n==============================\n[*] %s [*]\n==============================: \nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath: %s\nHash(hex): %s\n",
-                log->description, log->tgid, log->tid, log->uid, log->euid, log->program_pathname, hash_hex);
+                "\n===================================\n[*] %s at %s [*]\n===================================\nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath1: %s\nPath2: %s\nProgram: %s\nHash(hex): %s\n",
+                log->description, timestamp, log->tgid, log->tid, log->uid, log->euid, log->path1, log->path2, log->program_pathname, hash_hex);
 
         // Write to the log file
         file = filp_open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0600);
@@ -209,6 +250,7 @@ static void write_audit_log(struct work_struct *work) {
         // Cleanup
         kfree(log_entry);
         kfree(computed_hash);
+        kfree(program_content);
         if (log->program_pathname) kfree(log->program_pathname);
         kfree(log);
 }
@@ -224,13 +266,13 @@ char *get_current_exe_path(void) {
 
         buf = (char *)__get_free_page(GFP_KERNEL);
         if (!buf) {
-                log_message(LOG_ERR, "get_current_exe_path: Failed to allocate memory for path buffer\n");
+                log_message(LOG_ERR, "get_current_exe_path: Failed to allocate memory for path buffer to submit deferred work\n");
                 return NULL;
         }
 
         pathname = d_path(&current->mm->exe_file->f_path, buf, PAGE_SIZE);
         if (IS_ERR(pathname)) {
-                pr_err("get_current_exe_path: Error converting path to string\n");
+                pr_err("get_current_exe_path: Error converting path to string to submit deferred work\n");
                 free_page((unsigned long)buf);
                 return NULL;
         }
@@ -241,22 +283,30 @@ char *get_current_exe_path(void) {
         return pathname; 
 }
 
-void submit_audit_log_work(char *description) {
+void submit_audit_log_work(const char *description, const char *path1, const char *path2) {
         file_audit_log *log;
 
         log = kzalloc(sizeof(*log), GFP_KERNEL);
         if (!log){
-                log_message(LOG_ERR, "Couldn't allocate log to submit deferred work...\n DESC was: '%s'\n", description);
+                log_message(LOG_ERR, "Couldn't allocate log to submit deferred work...\nDESC was: '%s'\n", description);
                 return;
         }
         log->description = description;
+        if(path1 == NULL){
+                path1 = "Not available.";
+        }
+        if(path2 == NULL){
+                path2 = "Not available.";
+        }
+        log->path1 = path1;
+        log->path2 = path2;
         log->tgid = CURRENT_TGID;
         log->tid = CURRENT_TID;
         log->uid = CURRENT_UID;
         log->euid = CURRENT_EUID;
         char *pathname = get_current_exe_path();
         if(pathname == NULL){
-                log_message(LOG_ERR, "Couldn't get_current_exe_path to submit deferred work...\n DESC was: '%s'\n", description);
+                log_message(LOG_ERR, "Couldn't get_current_exe_path to submit deferred work...\nDESC was: '%s'\n", description);
                 return;
         }
         log->program_pathname = pathname;
@@ -477,9 +527,8 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
                         if(is_dentry_protected(dentry)){
-                                char message[PATH_MAX + 100];
-                                snprintf(message, sizeof(message), "DENIED WRITE ACCESS TO FILE '%s'", pathname);
-                                submit_audit_log_work(message);
+                                pathname = kstrdup(pathname, GFP_KERNEL);
+                                submit_audit_log_work("DENIED WRITE_ON", pathname, NULL);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
@@ -531,9 +580,11 @@ static int handler_security_inode_rename(struct kretprobe_instance *ri, struct p
                 new_pathname = dentry_path_raw(new_dentry, new_path_buf, PATH_MAX);
 
                 if (!IS_ERR(old_pathname) && !IS_ERR(new_pathname)) {
-                        log_message(LOG_INFO, "DENIED RENAMING OF FILE/DIR FROM '%s' TO '%s' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", old_pathname, new_pathname);
+                        old_pathname = kstrdup(old_pathname, GFP_KERNEL);
+                        new_pathname = kstrdup(new_pathname, GFP_KERNEL);
+                        submit_audit_log_work("DENIED RENAMING", old_pathname, new_pathname);
                 } else {
-                        log_message(LOG_INFO, "DENIED RENAMING OF FILE/DIR AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                        submit_audit_log_work("DENIED RENAMING", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -578,9 +629,10 @@ static int handler_security_inode_unlink_rmdir(struct kretprobe_instance *ri, st
                 pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
 
                 if (!IS_ERR(pathname)) {
-                        log_message(LOG_INFO, "DENIED DELETION OF FILE/DIR '%s' AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
+                        pathname = kstrdup(pathname, GFP_KERNEL);
+                        submit_audit_log_work("DENIED DELETION", pathname, NULL);
                 } else {
-                        log_message(LOG_INFO, "DENIED DELETION OF FILE/DIR AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                        submit_audit_log_work("DENIED DELETION", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -632,9 +684,10 @@ static int handler_security_inode_create_mkdir(struct kretprobe_instance *ri, st
                 pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
 
                 if (!IS_ERR(pathname)) {
-                        log_message(LOG_INFO, "DENIED CREATION OF FILE/DIR '%s' AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
+                        pathname = kstrdup(pathname, GFP_KERNEL);
+                        submit_audit_log_work("DENIED CREATION", pathname, NULL);
                 } else {
-                        log_message(LOG_INFO, "DENIED CREATION OF FILE/DIR AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                        submit_audit_log_work("DENIED CREATION", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -691,9 +744,13 @@ static int handler_security_inode_link(struct kretprobe_instance *ri, struct pt_
                 new_pathname = dentry_path_raw(new_dentry, new_path_buf, PATH_MAX);
 
                 if (!IS_ERR(old_pathname) && !IS_ERR(new_pathname)) {
-                        log_message(LOG_INFO, "DENIED CREATION OF HARD-LINK '%s' TO FILE '%s' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", new_pathname, old_pathname);
+                        //HARD_LINK -> new_pathname 
+                        //FILE -> old_pathname
+                        old_pathname = kstrdup(old_pathname, GFP_KERNEL);
+                        new_pathname = kstrdup(new_pathname, GFP_KERNEL);
+                        submit_audit_log_work("DENIED HARD-LNK", new_pathname, old_pathname);
                 } else {
-                        log_message(LOG_INFO, "DENIED CREATION OF HARD-LINK TO FILE AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                        submit_audit_log_work("DENIED HARD-LNK", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -756,9 +813,12 @@ static int handler_security_inode_symlink(struct kretprobe_instance *ri, struct 
                 target_file_pathname = dentry_path_raw(target_file_dentry, target_file_path_buf, PATH_MAX);
 
                 if (!IS_ERR(pathname) && !IS_ERR(target_file_pathname)) {
-                        log_message(LOG_INFO, "DENIED CREATION OF SYMLINK '%s' TO FILE '%s' AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname, target_file_pathname);
+                        //SYM-LINK -> pathname FILE -> target_file_pathname
+                        pathname = kstrdup(pathname, GFP_KERNEL);
+                        target_file_pathname = kstrdup(target_file_pathname, GFP_KERNEL);
+                        submit_audit_log_work("DENIED SYMB-LNK", pathname, target_file_pathname);
                 } else {
-                        log_message(LOG_INFO, "DENIED CREATION OF SYMLINK TO FILE AS ONE OR BOTH PATHS ARE BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n");
+                        submit_audit_log_work("DENIED SYMB-LNK", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;

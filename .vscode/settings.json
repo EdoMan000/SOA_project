@@ -10,6 +10,7 @@
         "string.h": "c",
         "type_traits": "c",
         "io.h": "c",
-        "typeinfo": "c"
+        "typeinfo": "c",
+        "cmath": "c"
     }
 }
