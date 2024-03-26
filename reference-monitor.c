@@ -57,9 +57,13 @@ MODULE_DESCRIPTION("reference monitor");
 
 //===================================
 #define CURRENT_EUID current->cred->euid.val
+#define CURRENT_UID current->cred->uid.val
+#define CURRENT_TGID current->tgid
+#define CURRENT_TID current->pid
 #define RECONF_ENABLED 1
 #define RECONF_DISABLED 0
 #define MAX_PASSW_LEN 32
+//===================================
 
 typedef enum {
         REFMON_ACTION_PROTECT,
@@ -91,20 +95,177 @@ typedef struct _refmon {
         char *password_digest;  
         struct list_head protected_paths;           
 } refmon;
+//==================================
+#define MAX_LOGMSG_LEN 256
+
+enum log_level {
+        LOG_ERR,
+        LOG_INFO
+};
+
+static void log_message(enum log_level level, const char *fmt, ...) {
+        va_list args;
+        char *log_msg;
+        const char *log_level_str;
+
+        switch (level) {
+                case LOG_ERR:
+                log_level_str = KERN_ERR;
+                break;
+                case LOG_INFO:
+                log_level_str = KERN_INFO;
+                break;
+                default:
+                log_level_str = KERN_DEFAULT; 
+                break;
+        }
+
+        va_start(args, fmt);
+
+        char formatted_msg[MAX_LOGMSG_LEN];
+        vsnprintf(formatted_msg, sizeof(formatted_msg), fmt, args);
+
+        va_end(args);
+
+        log_msg = kasprintf(GFP_KERNEL, "%s%s: %s", log_level_str, MODNAME, formatted_msg);
+
+        if (log_msg) {
+                printk("%s", log_msg);
+                kfree(log_msg);
+        } else {
+                printk("%s%s: Log message allocation failed\n", log_level_str, MODNAME);
+        }
+}
+
+//===================================
 
 typedef struct _file_audit_log {
+        char *description;
         pid_t tgid;
         pid_t tid;
         uid_t uid;
         uid_t euid;
-        char *program_path;
-        char *hash;  
-        struct list_head list;
+        char *program_pathname;
+        struct work_struct the_work;
 } file_audit_log;
 
-refmon reference_monitor;
 
+
+#define FILE_PATH "/home/manenti_0333574/Scaricati/audit_log.txt"
+
+static void write_audit_log(struct work_struct *work) {
+        file_audit_log *log = container_of(work, file_audit_log, the_work);
+        struct file *file;
+        char *log_entry;
+        char hash_hex[SHA256_DIGEST_SIZE * 2 + 1];
+        struct timespec64 ts;
+        char timestamp[100];
+        int len;
+
+        unsigned char *computed_hash = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
+        if(!computed_hash){
+                log_message(LOG_ERR, "Couldn't allocate memory to store computed hash of program content during deferred work...\n DESC was: '%s'\n", log->description);
+                return;
+        }
+        //TODO hash the program content not the program pathname, this is just to test the other things
+        // if (compute_sha256(program_content, program_content_len, computed_hash)) {
+        if (compute_sha256(log->program_pathname, strlen(log->program_pathname), computed_hash)) {
+                kfree(computed_hash);
+                log_message(LOG_ERR, "Couldn't compute sha256 of program content during deferred work...\n DESC was: '%s'\n", log->description);
+                return;
+        }
+        // Compute hash hex string
+        bin2hex(hash_hex, computed_hash, SHA256_DIGEST_SIZE);
+        hash_hex[SHA256_DIGEST_SIZE * 2] = '\0';
+
+        ktime_get_real_ts64(&ts); // Get current timestamp
+        snprintf(timestamp, sizeof(timestamp), "%lld.%09ld", (long long)ts.tv_sec, ts.tv_nsec);
+
+        len = snprintf(NULL, 0,
+                "\n==============================\n[*] %s [*]\n==============================: \nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath: %s\nHash(hex): %s\n",
+                log->description, log->tgid, log->tid, log->uid, log->euid, log->program_pathname, hash_hex) + 1; // +1 for '\0'
+        log_entry = kmalloc(len, GFP_KERNEL);
+        if (!log_entry) {
+                log_message(LOG_ERR, "Failed to allocate memory for log entry during deferred work...\n DESC was: '%s'\n", log->description);
+                kfree(computed_hash);
+                return;
+        }
+        snprintf(log_entry, len,
+                "\n==============================\n[*] %s [*]\n==============================: \nTGID: %d, TID: %d, UID: %u, EUID: %u\nPath: %s\nHash(hex): %s\n",
+                log->description, log->tgid, log->tid, log->uid, log->euid, log->program_pathname, hash_hex);
+
+        // Write to the log file
+        file = filp_open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (!IS_ERR(file)) {
+                ssize_t written = kernel_write(file, log_entry, len - 1, &file->f_pos);
+                if (written < 0) {
+                        log_message(LOG_ERR, "Failed to write to log file...\n DESC was: '%s'\n", log->description);
+                }
+                filp_close(file, NULL);
+        } else {
+                log_message(LOG_ERR, "Couldn't open file to write the log to...\n DESC was: '%s'\n", log->description);
+        }
+
+        // Cleanup
+        kfree(log_entry);
+        kfree(computed_hash);
+        if (log->program_pathname) kfree(log->program_pathname);
+        kfree(log);
+}
+
+/**
+ * Retrieves the full pathname of the current executable file.
+ *
+ * @return A pointer to a dynamically allocated string containing the full pathname,
+ *         or NULL on error. The caller is responsible for freeing this memory with kfree.
+ */
+char *get_current_exe_path(void) {
+        char *buf, *pathname = NULL;
+
+        buf = (char *)__get_free_page(GFP_KERNEL);
+        if (!buf) {
+                log_message(LOG_ERR, "get_current_exe_path: Failed to allocate memory for path buffer\n");
+                return NULL;
+        }
+
+        pathname = d_path(&current->mm->exe_file->f_path, buf, PAGE_SIZE);
+        if (IS_ERR(pathname)) {
+                pr_err("get_current_exe_path: Error converting path to string\n");
+                free_page((unsigned long)buf);
+                return NULL;
+        }
+        pathname = kstrdup(pathname, GFP_KERNEL);
+
+        free_page((unsigned long)buf);
+
+        return pathname; 
+}
+
+void submit_audit_log_work(char *description) {
+        file_audit_log *log;
+
+        log = kzalloc(sizeof(*log), GFP_KERNEL);
+        if (!log){
+                log_message(LOG_ERR, "Couldn't allocate log to submit deferred work...\n DESC was: '%s'\n", description);
+                return;
+        }
+        log->description = description;
+        log->tgid = CURRENT_TGID;
+        log->tid = CURRENT_TID;
+        log->uid = CURRENT_UID;
+        log->euid = CURRENT_EUID;
+        char *pathname = get_current_exe_path();
+        if(pathname == NULL){
+                log_message(LOG_ERR, "Couldn't get_current_exe_path to submit deferred work...\n DESC was: '%s'\n", description);
+                return;
+        }
+        log->program_pathname = pathname;
+
+        __INIT_WORK(&log->the_work, write_audit_log, (unsigned long)&log->the_work);
+        schedule_work(&log->the_work);
+}
 //===================================
+refmon reference_monitor;
 
 unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0);
@@ -288,48 +449,6 @@ static refmon_path *get_protected_path_entry(const char *kern_path_str) {
 }
 
 //==================================
-#define MAX_LOGMSG_LEN 256
-
-enum log_level {
-        LOG_ERR,
-        LOG_INFO
-};
-
-static void log_message(enum log_level level, const char *fmt, ...) {
-        va_list args;
-        char *log_msg;
-        const char *log_level_str;
-
-        switch (level) {
-                case LOG_ERR:
-                log_level_str = KERN_ERR;
-                break;
-                case LOG_INFO:
-                log_level_str = KERN_INFO;
-                break;
-                default:
-                log_level_str = KERN_DEFAULT; 
-                break;
-        }
-
-        va_start(args, fmt);
-
-        char formatted_msg[MAX_LOGMSG_LEN];
-        vsnprintf(formatted_msg, sizeof(formatted_msg), fmt, args);
-
-        va_end(args);
-
-        log_msg = kasprintf(GFP_KERNEL, "%s%s: %s", log_level_str, MODNAME, formatted_msg);
-
-        if (log_msg) {
-                printk("%s", log_msg);
-                kfree(log_msg);
-        } else {
-                printk("%s%s: Log message allocation failed\n", log_level_str, MODNAME);
-        }
-}
-
-//==================================
 struct krp_security_file_open_data {
 	struct file * file;
 };
@@ -358,7 +477,9 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
                         if(is_dentry_protected(dentry)){
-                                log_message(LOG_INFO, "DENIED ACCESS TO FILE '%s' AS PATH IS BEING PROTECTED! REGISTERING ILLEGAL ACCESS...\n", pathname);
+                                char message[PATH_MAX + 100];
+                                snprintf(message, sizeof(message), "DENIED WRITE ACCESS TO FILE '%s'", pathname);
+                                submit_audit_log_work(message);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
