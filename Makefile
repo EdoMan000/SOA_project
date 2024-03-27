@@ -1,5 +1,5 @@
 obj-m += the_reference-monitor.o
-the_reference-monitor-objs += reference-monitor.o lib/scth.o utils/sha256_utils.o
+the_reference-monitor-objs += reference-monitor.o lib/scth.o utils/sha256_utils.o utils/general_utils.o
 TMP_FILE := makefile_out.tmp
 
 
@@ -26,7 +26,7 @@ endef
 
 define insmod_module
 	@if [ "$1" = "reference-monitor" ]; then \
-		echo "Mounting reference-monitor module..." && { sudo insmod the_reference-monitor.ko the_syscall_table=$$(sudo cat /sys/module/the_usctm/parameters/sys_call_table_address) the_refmon_secret=$$(sudo cat secret) > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,reference-monitor,mount); } \
+		echo "Mounting reference-monitor module..." && { sudo insmod the_reference-monitor.ko the_syscall_table=$$(sudo cat /sys/module/the_usctm/parameters/sys_call_table_address) the_refmon_secret=$$(sudo cat the_secret) > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,reference-monitor,mount); } \
 	elif [ "$1" = "usctm" ]; then \
 		echo "Mounting usctm module..." && { cd the_usctm && sudo insmod the_usctm.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,usctm,mount); } \
 	else \
@@ -89,26 +89,26 @@ define clean_singlefilefs
 endef
 
 define mount_singlefilefs
-	@echo "Mounting singlefilefs FS..." && cd singlefile-FS && sudo mount -o loop -t singlefilefs image /tmp/refmon_log/ && echo "FS successfully mounted!";
+	@echo "Mounting singlefilefs FS..." && cd singlefile-FS && sudo mount -o loop -t singlefilefs image /tmp/refmon_log/ && echo "singlefilefs FS successfully mounted!";
 endef
 
 define unmount_singlefilefs
-	@echo "Unmounting singlefilefs FS..." && cd singlefile-FS && sudo umount /tmp/refmon_log/ && echo "FS successfully unmounted!";
+	@echo "Unmounting singlefilefs FS..." && cd singlefile-FS && sudo umount /tmp/refmon_log/ && echo "singlefilefs FS successfully unmounted!";
 endef
 
-define compile_user
-	@echo "Compiling user code..." && cd user && gcc user.c -o ../user.out && echo "user code compilation successful!";
+define compile_refmon_tool
+	@echo "Compiling refmon_tool..." && cd refmon_tool && gcc refmon_tool.c -o ../refmon_tool_run && echo "refmon_tool compilation successful!";
 endef
 
-define clean_user
-	@echo "Cleaning user code..." && rm user.out && echo "user code cleaning successful!";
+define clean_refmon_tool
+	@echo "Cleaning refmon_tool..." && rm refmon_tool_run && echo "refmon_tool cleaning successful!";
 endef
 
 up: all mount
-	@echo "Refmon is up."
+	@echo "REFMON IS UP.\n\n You can now run refmon_tool_run to easily interact with it.\n NB:] EUID 0 is required."
 
 down: unmount clean
-	@echo "Refmon is down."
+	@echo "REFMON IS DOWN."
 
 all:
 	$(call build_module,the_usctm,usctm)
@@ -116,13 +116,13 @@ all:
 	$(call compile_singlefilemakefs)
 	$(call build_module,singlefile-FS,singlefilefs)
 	$(call init_singlefilefs)
-	$(call compile_user)
+	$(call compile_refmon_tool)
 
 clean:
 	$(call clean_module,the_usctm,usctm)
 	$(call clean_module,.,reference-monitor)
 	$(call clean_singlefilefs)
-	$(call clean_user)
+	$(call clean_refmon_tool)
 
 mount:
 	$(call insmod_module,usctm)

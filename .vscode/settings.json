@@ -11,6 +11,10 @@
         "type_traits": "c",
         "io.h": "c",
         "typeinfo": "c",
-        "cmath": "c"
+        "cmath": "c",
+        "cstdarg": "c",
+        "sha256_utils.h": "c",
+        "message_logging.h": "c",
+        "general_utils.h": "c"
     }
 }

@@ -49,14 +49,17 @@
 #include <linux/syscalls.h>
 #include "lib/include/scth.h"
 #include "utils/include/sha256_utils.h"
+#include "utils/include/general_utils.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Edoardo Manenti <manenti000@gmail.com>");
 MODULE_DESCRIPTION("reference monitor");
 
-#define MODNAME "REFMON"
+//==================================
+//   M O D    C O N S T A N T S   ||
+//==================================
 
-//===================================
+#define MODNAME "REFMON"
 #define CURRENT_EUID current->cred->euid.val
 #define CURRENT_UID current->cred->uid.val
 #define CURRENT_TGID current->tgid
@@ -64,7 +67,13 @@ MODULE_DESCRIPTION("reference monitor");
 #define RECONF_ENABLED 1
 #define RECONF_DISABLED 0
 #define MAX_PASSW_LEN 32
-//===================================
+#define AUDIT if(1)
+#define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
+#define LOG_FILE_PATH "/tmp/refmon_log/the-refmon-log"
+
+//==================================
+//  S T R U C T S   &   V A R S   ||
+//==================================
 
 typedef enum {
         REFMON_ACTION_PROTECT,
@@ -96,49 +105,6 @@ typedef struct _refmon {
         char *password_digest;  
         struct list_head protected_paths;           
 } refmon;
-//==================================
-#define MAX_LOGMSG_LEN 256
-
-enum log_level {
-        LOG_ERR,
-        LOG_INFO
-};
-
-static void log_message(enum log_level level, const char *fmt, ...) {
-        va_list args;
-        char *log_msg;
-        const char *log_level_str;
-
-        switch (level) {
-                case LOG_ERR:
-                log_level_str = KERN_ERR;
-                break;
-                case LOG_INFO:
-                log_level_str = KERN_INFO;
-                break;
-                default:
-                log_level_str = KERN_DEFAULT; 
-                break;
-        }
-
-        va_start(args, fmt);
-
-        char formatted_msg[MAX_LOGMSG_LEN];
-        vsnprintf(formatted_msg, sizeof(formatted_msg), fmt, args);
-
-        va_end(args);
-
-        log_msg = kasprintf(GFP_KERNEL, "%s%s: %s", log_level_str, MODNAME, formatted_msg);
-
-        if (log_msg) {
-                printk("%s", log_msg);
-                kfree(log_msg);
-        } else {
-                printk("%s%s: Log message allocation failed\n", log_level_str, MODNAME);
-        }
-}
-
-//===================================
 
 typedef struct _file_audit_log {
         const char *description;
@@ -153,9 +119,47 @@ typedef struct _file_audit_log {
 } file_audit_log;
 
 
+refmon reference_monitor;
 
-#define LOG_FILE_PATH "/tmp/refmon_log/the-refmon-log"
+unsigned long the_ni_syscall;
 
+unsigned long new_sys_call_array[] = {0x0,0x0};
+int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
+
+//==================================
+//   M O D U L E    P A R A M S   ||
+//==================================
+
+unsigned long the_syscall_table = 0x0;
+module_param(the_syscall_table, ulong, 0);
+
+static int the_refmon_reconf = RECONF_ENABLED;//starting as REC-OFF 
+module_param(the_refmon_reconf,int,0660); //NB:] this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
+
+static unsigned char the_refmon_secret[MAX_PASSW_LEN]; 
+module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
+
+//==================================
+//   D E F E R R E D    W O R K   ||
+//==================================
+
+/**
+ * @brief Performs deferred writing of illegal accesses to protected files/dirs.
+ *
+ *      This function is designed to run in the context of a workqueue. It takes the
+ *      content prepared in a file_audit_log structure and writes it to a specified
+ *      log file. The function handles formatting of the log entry, computing a hash
+ *      of the program content, and writing the formatted log entry to the file. This
+ *      process is done in a deferred manner to minimize the impact on the main execution
+ *      flow of the program.
+ *
+ * @param work Pointer to the work_struct embedded in a file_audit_log structure.
+ *             This structure contains all necessary information to generate the log entry.
+ *
+ * NB:] The log entry includes the process and thread IDs, user IDs, program pathname,
+ *      and a SHA-256 hash of the program's content. If any step in the process fails,
+ *      appropriate error messages are logged using the logging facilities.
+ */
 static void write_audit_log(struct work_struct *work) {
         file_audit_log *log = container_of(work, file_audit_log, the_work);
         struct file *file;
@@ -278,7 +282,7 @@ cleanup:
 }
 
 /**
- * Retrieves the full pathname of the current executable file.
+ * @brief Retrieves the full pathname of the current executable file.
  *
  * @return A pointer to a dynamically allocated string containing the full pathname,
  *         or NULL on error. The caller is responsible for freeing this memory with kfree.
@@ -305,6 +309,24 @@ char *get_current_exe_path(void) {
         return pathname; 
 }
 
+/**
+ * @brief Schedules a work item to asynchronously write audit log entries for illegal accesses to protected files/dirs.
+ *
+ *      Initializes a file_audit_log structure with details of the audit event, including
+ *      descriptions of the event, paths involved, process and user identifiers, and the
+ *      pathname of the program executing the operation. It then schedules a deferred
+ *      work task to compute the hash of the program content and write this data into an audit log file.
+ *
+ * NB:] This approach allows the logging operation to be performed outside the critical
+ *      execution path, reducing potential performance impact on the system.
+ *
+ * @param description A brief description of the audit event.
+ * @param path1 The primary path involved in the audit event (e.g. file path being accessed).
+ * @param path2 The secondary path involved in the event (e.g. destination path in a move operation), if applicable.
+ *
+ * NB:] The memory for the file_audit_log structure and any dynamic strings it contains (such as pathname)
+ *      is allocated here and must be freed by the `write_audit_log` function after logging is complete.
+ */
 void submit_audit_log_work(const char *description, const char *path1, const char *path2) {
         file_audit_log *log;
 
@@ -330,89 +352,13 @@ void submit_audit_log_work(const char *description, const char *path1, const cha
         __INIT_WORK(&log->the_work, write_audit_log, (unsigned long)&log->the_work);
         schedule_work(&log->the_work);
 }
-//===================================
-refmon reference_monitor;
-
-unsigned long the_syscall_table = 0x0;
-module_param(the_syscall_table, ulong, 0);
-
-unsigned long the_ni_syscall;
-
-unsigned long new_sys_call_array[] = {0x0,0x0};
-#define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
-int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
-
-#define AUDIT if(1)
-
-static int the_refmon_reconf = RECONF_ENABLED;//starting as REC-OFF 
-module_param(the_refmon_reconf,int,0660); //NB:] this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
-
-static unsigned char the_refmon_secret[MAX_PASSW_LEN]; // +1 for null terminator
-module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
 
 //==================================
-
-typedef struct {
-        char *kernel_passw;
-        char *kernel_path;
-        int status; 
-} copied_strings_t;
+//  M A N A G I N G    P A T H S  ||
+//==================================
 
 /**
- * Copies user-space strings `passw` and `path` to kernel space.
- * 
- * @param user_passw Pointer to user-space password string.
- * @param user_path Pointer to user-space path string.
- * @return A structure containing:
- *   - `kernel_passw`: Kernel-space copy of `user_passw`. Caller must free.
- *   - `kernel_path`: Kernel-space copy of `user_path`. Caller must free.
- *   - `status`: 0 on success; -EFAULT for invalid lengths; -ENOMEM for allocation failures.
- */
-
-static copied_strings_t copy_strings_from_user(const char __user *user_passw, const char __user *user_path) {
-        copied_strings_t result;
-        unsigned long passw_len, path_len;
-
-        result.kernel_passw = NULL;
-        result.kernel_path = NULL;
-        result.status = 0;
-
-        passw_len = strnlen_user(user_passw, PAGE_SIZE);
-        path_len = strnlen_user(user_path, PAGE_SIZE);
-
-        if (passw_len == 0 || passw_len > PAGE_SIZE || path_len == 0 || path_len > PAGE_SIZE) {
-                result.status = -EFAULT;
-                return result;
-        }
-
-        result.kernel_passw = kmalloc(passw_len, GFP_KERNEL);
-        result.kernel_path = kmalloc(path_len, GFP_KERNEL);
-        if (!result.kernel_passw || !result.kernel_path) {
-                result.status = -ENOMEM;
-                goto clean_up;
-        }
-
-        if (copy_from_user(result.kernel_passw, user_passw, passw_len) != 0 || copy_from_user(result.kernel_path, user_path, path_len) != 0) {
-                result.status = -EFAULT;
-                goto clean_up;
-        }
-
-        result.kernel_passw[passw_len - 1] = '\0';
-        result.kernel_path[path_len - 1] = '\0';
-
-        return result;
-
-clean_up:
-        kfree(result.kernel_passw);
-        kfree(result.kernel_path);
-        result.kernel_passw = NULL;
-        result.kernel_path = NULL;
-        return result;
-}
-
-
-/**
- * Check if a given path is already protected.
+ * @brief Checks if a given path is already protected.
  * 
  * @param kern_path_str A kernel-space string representing the path to check.
  * @return 1 if the path is protected, 0 otherwise. -1 is returned if given path couldn't be resolved.
@@ -438,7 +384,7 @@ static int is_path_protected(const char *kern_path_str) {
 
 
 /**
- * Check if a given inode corresponds to a protected file.
+ * @brief Checks if a given inode corresponds to a protected file.
  * 
  * @param inode_num The inode number to check.
  * @return 1 if the inode is protected, 0 otherwise.
@@ -455,7 +401,7 @@ static int is_inode_protected(unsigned long inode_num) {
 }
 
 /**
- * Check if a given dentry corresponds to a protected file or it is situated in a protected path.
+ * @brief Checks if a given dentry corresponds to a protected file or it is situated in a protected path.
  * 
  * @param dentry The dentry to check.
  * @return 1 if the dentry or its path is protected, 0 otherwise.
@@ -490,7 +436,7 @@ static int is_dentry_protected(struct dentry *dentry) {
 
 
 /**
- * Retrieve the entry for a given path if it is protected.
+ * @brief Retrieves the entry for a given path if it is protected.
  * 
  * @param kern_path_str A kernel-space string representing the path to check.
  * @return A pointer to the refmon_path entry if the path is protected, NULL otherwise.
@@ -515,6 +461,20 @@ static refmon_path *get_protected_path_entry(const char *kern_path_str) {
 }
 
 //==================================
+//      K R E T P R O B E S       ||
+//==================================
+
+/**
+ * @brief Kretprobe for security_file_open.
+ * 
+ *      Intercepts attempts to open files to enforce write protection on protected paths.
+ *      It checks if the opened file is designated for writing and is located within a protected path,
+ *      blocking the operation if so and logging the event.
+ * 
+ * NB:] existing symbolic or hard links to files are automatically managed because the check 
+ *      is done on the inode of the protected file, triggering the probing in any case.
+ */
+
 struct krp_security_file_open_data {
 	struct file * file;
 };
@@ -564,6 +524,14 @@ static struct kretprobe krp_security_file_open = {
 };
 
 //==================================
+/**
+ * @brief Kretprobe for security_inode_rename.
+ * 
+ *      Monitors file or directory rename operations. If either the source or destination paths
+ *      are protected, the rename operation is blocked and the event is logged.
+ *      This ensures that protected resources cannot be bypassed through renaming.
+ */
+
 struct krp_security_inode_rename_data {
         struct dentry *old_dentry;
         struct dentry *new_dentry;
@@ -618,6 +586,14 @@ static struct kretprobe krp_security_inode_rename = {
 };
 
 //==================================
+/**
+ * @brief Kretprobes for security_inode_unlink and security_inode_rmdir.
+ * 
+ *      These handlers intercept file deletion and directory removal operations, respectively.
+ *      If the target is protected, the operation is denied and the event is recorded,
+ *      ensuring the integrity of protected paths.
+ */
+
 struct krp_security_inode_unlink_rmdir_data {
         struct dentry *dentry;
 };
@@ -673,6 +649,14 @@ static struct kretprobe krp_security_inode_rmdir = {
 };
 
 //==================================
+/**
+ * @brief Kretprobes for security_inode_create and security_inode_mkdir.
+ * 
+ *      These handle file creation and directory making operations. When a creation operation
+ *      occurs within a protected directory, it is intercepted and blocked to preserve the
+ *      secure state of the whole protected directory content.
+ */
+
 struct krp_security_inode_create_mkdir_data {
         struct dentry *dentry;
 };
@@ -728,6 +712,14 @@ static struct kretprobe krp_security_inode_mkdir = {
 };
 
 //==================================
+/**
+ * @brief Kretprobe for security_inode_link.
+ * 
+ *      Watches for hard link creation operations involving protected files.
+ *      If the source file or the link target directory is protected, the operation is blocked
+ *      and the event is logged.
+ */
+
 struct krp_security_inode_link_data {
         struct dentry *old_dentry;
         struct dentry *new_dentry;
@@ -784,6 +776,17 @@ static struct kretprobe krp_security_inode_link = {
 };
 
 //==================================
+/**
+ * @brief Kretprobe for security_inode_symlink.
+ * 
+ *      Monitors symbolic link creation, preventing links that reference or are placed within
+ *      protected paths. This is mainly to avoid altering the content of a protected directory
+ *      by creating symlinks, secondly to avoid indirect access to protected files through symlinks.
+ * 
+ * NB:] existing symlinks are a don't care because any write operation on them would still be
+ *      intercepted by security_file_open probing.
+ */
+
 struct krp_security_inode_symlink_data {
         struct dentry *dentry;
         char *old_name;
@@ -862,7 +865,12 @@ static struct kretprobe *my_kretprobes[] = {
         &krp_security_inode_symlink,
 };
 
-
+/**
+ * @brief Registers all the kretprobes used by the module.
+ *
+ *      This function iterates through the array of kretprobe pointers defined globally,
+ *      attempting to register each. It logs the outcome of each registration attempt.
+ */
 void register_my_kretprobes(void) {
         for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
                 int ret = register_kretprobe(my_kretprobes[i]);
@@ -874,7 +882,12 @@ void register_my_kretprobes(void) {
         }
 }
 
-
+/**
+ * @brief Unregisters all the kretprobes used by the module.
+ *
+ *      This function iterates through the array of kretprobe pointers defined globally,
+ *      attempting to unregister each. It logs the outcome of each unregistration attempt.
+ */
 void unregister_my_kretprobes(void) {
         for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
                 unregister_kretprobe(my_kretprobes[i]);
@@ -882,7 +895,12 @@ void unregister_my_kretprobes(void) {
         }
 }
 
-
+/**
+ * @brief Enables all the kretprobes used by the module.
+ *
+ *      This function iterates through the array of kretprobe pointers defined globally,
+ *      attempting to enable each. It logs the outcome of each enable attempt.
+ */
 void enable_my_kretprobes(void) {
         for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
                 int ret = enable_kretprobe(my_kretprobes[i]);
@@ -894,7 +912,12 @@ void enable_my_kretprobes(void) {
         }
 }
 
-
+/**
+ * @brief Disables all the kretprobes used by the module.
+ *
+ *      This function iterates through the array of kretprobe pointers defined globally,
+ *      attempting to disable each. It logs the outcome of each disable attempt.
+ */
 void disable_my_kretprobes(void) {
     for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
         disable_kretprobe(my_kretprobes[i]);
@@ -902,9 +925,17 @@ void disable_my_kretprobes(void) {
     }
 }
 
-
+//==================================
+//  I N T E R N A L    U T I L S  ||
 //==================================
 
+/**
+ * @brief Converts the state of the reference monitor to a string representation.
+ *
+ * @param state The current state of the reference monitor.
+ * @param opposite If non-zero, returns the opposite of the current state as a string.
+ * @return The string representation of the current (or opposite) state, default message if unknown.
+ */
 static const char* state_to_string(state_t state, int opposite) {
         switch (state) {
                 case ON:
@@ -924,6 +955,15 @@ static const char* state_to_string(state_t state, int opposite) {
         }
 }
 
+/**
+ * @brief Updates the state of the reference monitor and logs the change.
+ *
+ *      This function changes the state of the reference monitor based on the provided
+ *      new state and reconfiguration flag. It also logs the change.
+ *
+ * @param new_state The new state to set.
+ * @param reconf The reconfiguration flag, indicating if reconfiguration is enabled.
+ */
 static void update_state(state_t new_state, int reconf){
         const char *state_str = state_to_string(new_state, 0);
         const char *opposite_state_str = state_to_string(new_state, 1);
@@ -966,6 +1006,12 @@ static void update_state(state_t new_state, int reconf){
         }
 }
 
+/**
+ * @brief Prints the current state of the reference monitor and the list of protected paths.
+ *
+ *      This function logs the current state of the reference monitor and iterates through
+ *      the list of protected paths, logging each.
+ */
 static void print_current_refmon_state(void){
         char *buf;
         char *pathname;
@@ -1007,6 +1053,18 @@ static void print_current_refmon_state(void){
 
 }
 
+//==================================
+//    S Y S T E M    C A L L S    ||
+//==================================
+
+/**
+ * @brief Manages the operational state of the reference monitor.
+ * 
+ *      This system call enables or disables the reference monitor and its reconfiguration capabilities.
+ *
+ * @param cmd The command code indicating the desired operation. Valid commands include enabling/disabling the reference monitor and enabling/disabling reconfiguration.
+ * @return 0 on success, negative error code on failure.
+ */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 __SYSCALL_DEFINEx(1, _refmon_manage, int, code){
 #else
@@ -1049,6 +1107,17 @@ exit:
         return ret;
 }
 
+/**
+ * @brief Dynamically reconfigures protected paths within the reference monitor.
+ * 
+ *      Allows for the addition or removal of paths from the protection list of the reference monitor.
+ * NB:] Authentication with a pre-defined password is required to authorize reconfiguration actions.
+ *
+ * @param password A user-space string containing the password for authentication.
+ * @param path A user-space string specifying the path to add or remove from the protected list.
+ * @param action Specifies the action to be taken: adding or removing a path. Specified by refmon_action_t struct.
+ * @return 0 on success, negative error code on failure.
+ */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 __SYSCALL_DEFINEx(3, _refmon_reconfigure, refmon_action_t, action, char __user *, passw, char __user *, path){
 #else
@@ -1166,6 +1235,18 @@ long sys_refmon_reconfigure = (unsigned long) __x64_sys_refmon_reconfigure;
 #else
 #endif
 
+//==================================
+//  I N I T   &   C L E A N U P   ||
+//==================================
+
+/**
+ * @brief Initialization function for the reference monitor module.
+ * 
+ *      Sets up the reference monitor structure, computes the password digest and stores it, 
+ *      hacks the syscall table to insert custom system calls, and registers kretprobes. 
+ * 
+ * NB:] It starts with the reference monitor in REC-OFF state, allowing for post-load configuration.
+ */
 int init_module(void) {
         int i;
         int ret;
@@ -1216,6 +1297,12 @@ int init_module(void) {
 
 }
 
+/**
+ * @brief Cleanup function for the reference monitor module.
+ * 
+ *      Restores the original system call table, unregisters kretprobes, and performs necessary cleanup.
+ *      Ensures a clean removal of the module without leaving residual effects on the system.
+ */
 void cleanup_module(void) {
         int i;
         log_message(LOG_INFO, "shutting down\n");
