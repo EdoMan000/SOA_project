@@ -154,7 +154,7 @@ typedef struct _file_audit_log {
 
 
 
-#define LOG_FILE_PATH "./log/the-refmon-log"
+#define LOG_FILE_PATH "/tmp/refmon_log/the-refmon-log"
 
 static void write_audit_log(struct work_struct *work) {
         file_audit_log *log = container_of(work, file_audit_log, the_work);
@@ -172,47 +172,40 @@ static void write_audit_log(struct work_struct *work) {
 
         unsigned char *computed_hash = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
         if(!computed_hash){
-                log_message(LOG_ERR, "Couldn't allocate memory to store computed hash of program content during deferred work...\n DESC was: '%s'\n", log->description);
+                log_message(LOG_ERR, "Couldn't allocate memory to store computed hash of program content during deferred work...\n\tDESC was: '%s'\n", log->description);
                 return;
         }
         //read the program content
         file = filp_open(log->program_pathname, O_RDONLY, 0);
         if (IS_ERR(file)) {
-                log_message(LOG_ERR, "Couldn't open file to read from program during deferred work...\n DESC was: '%s'\n", log->description);
-                kfree(computed_hash);
-                return;
+                log_message(LOG_ERR, "Couldn't open file to read from program during deferred work...\n\tDESC was: '%s'\n", log->description);
+                goto cleanup;
         }
         program_size = vfs_llseek(file, 0, SEEK_END);
         if (program_size < 0) {
-                log_message(LOG_ERR, "Failed to seek to the end of the program during deferred work...\n DESC was: '%s'\n", log->description);
-                kfree(computed_hash);
+                log_message(LOG_ERR, "Failed to seek to the end of the program during deferred work...\n\tDESC was: '%s'\n", log->description);
                 filp_close(file, NULL);
-                return;
+                goto cleanup;
         }
         vfs_llseek(file, 0, SEEK_SET);
         program_content = kmalloc(program_size + 1, GFP_KERNEL);
         if (!program_content) {
-                log_message(LOG_ERR, "Failed to allocate memory for program content during deferred work...\n DESC was: '%s'\n", log->description);
-                kfree(computed_hash);
+                log_message(LOG_ERR, "Failed to allocate memory for program content during deferred work...\n\tDESC was: '%s'\n", log->description);
                 filp_close(file, NULL);
-                return;
+                goto cleanup;
         }
         read_size = kernel_read(file, program_content, program_size, &pos);
         if (read_size < 0) {
-                log_message(LOG_ERR, "Failed to read program content during deferred work...\n DESC was: '%s'\n", log->description);
-                kfree(computed_hash);
-                kfree(program_content);
+                log_message(LOG_ERR, "Failed to read program content during deferred work...\n\tDESC was: '%s'\n", log->description);
                 filp_close(file, NULL);
-                return;
+                goto cleanup;
         } else {
                 filp_close(file, NULL);
                 program_content[read_size] = '\0';
         }
         if (compute_sha256(program_content, program_size, computed_hash)) {
-                kfree(computed_hash);
-                kfree(program_content);
-                log_message(LOG_ERR, "Couldn't compute sha256 of program content during deferred work...\n DESC was: '%s'\n", log->description);
-                return;
+                log_message(LOG_ERR, "Couldn't compute sha256 of program content during deferred work...\n\tDESC was: '%s'\n", log->description);
+                goto cleanup;
         }
         // Compute hash hex string
         bin2hex(hash_hex, computed_hash, SHA256_DIGEST_SIZE);
@@ -250,17 +243,15 @@ static void write_audit_log(struct work_struct *work) {
                 paths, log->program_pathname, hash_hex) + 1; // +1 for '\0'
         log_entry = kmalloc(len, GFP_KERNEL);
         if (!log_entry) {
-                log_message(LOG_ERR, "Failed to allocate memory for log entry during deferred work...\n DESC was: '%s'\n", log->description);
-                kfree(computed_hash);
-                kfree(program_content);
-                return;
+                log_message(LOG_ERR, "Failed to allocate memory for log entry during deferred work...\n\tDESC was: '%s'\n", log->description);
+                goto cleanup;
         }
         snprintf(log_entry, len,
                 "\n===========================================================================\n"
                 "[*] %s                                       | at %s [*]\n"
                 "===========================================================================\n"
                 "TGID: %d, TID: %d, UID: %u, EUID: %u\n"
-                "%s\n"
+                "%s"
                 "PROGRAM: %s\n"
                 "HASH(hex): %s\n"
                 "===========================================================================\n",
@@ -271,19 +262,19 @@ static void write_audit_log(struct work_struct *work) {
         if (!IS_ERR(file)) {
                 ssize_t written = kernel_write(file, log_entry, len - 1, &file->f_pos);
                 if (written < 0) {
-                        log_message(LOG_ERR, "Failed to write to log file...\n DESC was: '%s'\n", log->description);
+                        log_message(LOG_ERR, "Failed to write to log file...\n\tDESC was: '%s'\n", log->description);
                 }
                 filp_close(file, NULL);
         } else {
-                log_message(LOG_ERR, "Couldn't open file to write the log to...\n DESC was: '%s'\n", log->description);
+                log_message(LOG_ERR, "Couldn't open file to write the log to...\n\tDESC was: '%s'| err: %d\n", log->description, file);
         }
 
-        // Cleanup
-        kfree(log_entry);
-        kfree(computed_hash);
-        kfree(program_content);
+cleanup:
+        if(computed_hash) kfree(computed_hash);
+        if(program_content) kfree(program_content);
         if (log->program_pathname) kfree(log->program_pathname);
-        kfree(log);
+        if (log_entry) kfree(log_entry);
+        if(log) kfree(log);
 }
 
 /**
@@ -319,7 +310,7 @@ void submit_audit_log_work(const char *description, const char *path1, const cha
 
         log = kzalloc(sizeof(*log), GFP_KERNEL);
         if (!log){
-                log_message(LOG_ERR, "Couldn't allocate log to submit deferred work...\nDESC was: '%s'\n", description);
+                log_message(LOG_ERR, "Couldn't allocate log to submit deferred work...\n\tDESC was: '%s'\n", description);
                 return;
         }
         log->description = description;
@@ -331,7 +322,7 @@ void submit_audit_log_work(const char *description, const char *path1, const cha
         log->euid = CURRENT_EUID;
         char *pathname = get_current_exe_path();
         if(pathname == NULL){
-                log_message(LOG_ERR, "Couldn't get_current_exe_path to submit deferred work...\nDESC was: '%s'\n", description);
+                log_message(LOG_ERR, "Couldn't get_current_exe_path to submit deferred work...\n\tDESC was: '%s'\n", description);
                 return;
         }
         log->program_pathname = pathname;

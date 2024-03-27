@@ -7,56 +7,103 @@
 #include <linux/types.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+
 #include <linux/version.h>
+#include <linux/uio.h> 
 
 #include "singlefilefs.h"
 
-ssize_t onefilefs_append_write(struct file *filp, const char __user *buf, size_t len, loff_t *off) {
-    struct inode *inode = filp->f_inode;
+// //this would be used for .write file operation (writes from userspace) but in this case we don't need it... leaving it because i already implemented it
+// ssize_t onefilefs_append_write(struct file *filp, const char __user *buf, size_t len, loff_t *off) {
+//     struct inode *inode = filp->f_inode;
+//     struct super_block *sb = inode->i_sb;
+//     struct buffer_head *bh;
+//     int block_to_write;
+//     loff_t offset;
+//     size_t remaining_bytes = len;
+    
+//     //Use the current file size as the offset for appending (we ignore the off, as we allow append only).
+//     loff_t append_offset = inode->i_size;
+
+//     //Calculate the block where the append operation should start.
+//     block_to_write = append_offset / DEFAULT_BLOCK_SIZE + 2; // +2 for superblock and inode block.
+//     offset = append_offset % DEFAULT_BLOCK_SIZE;
+
+//     //Handle writes that extend beyond the current block.
+//     //This simple example assumes writing within a single block for simplicity.
+//     if (offset + len > DEFAULT_BLOCK_SIZE)
+//         remaining_bytes = DEFAULT_BLOCK_SIZE - offset;
+
+//     //Read the block where we need to append.
+//     bh = (struct buffer_head *)sb_bread(sb, block_to_write);
+//     if (!bh)
+//         return -EIO;
+
+//     //Copy data from user buffer to the block buffer.
+//     if (copy_from_user(bh->b_data + offset, buf, remaining_bytes)) {
+//         brelse(bh); //Release the buffer head.
+//         return -EFAULT;
+//     }
+
+//     //Mark the buffer dirty so it gets written back to disk.
+//     mark_buffer_dirty(bh);
+//     sync_dirty_buffer(bh);
+//     brelse(bh);
+
+//     //Update the inode size to reflect the appended data.
+//     inode->i_size += remaining_bytes;
+//     mark_inode_dirty(inode);
+
+//     //The offset parameter is not used for determining where to write,
+//     //but it's updated to reflect the new end of the file after appending.
+//     *off = inode->i_size;
+
+//     return remaining_bytes;
+// }
+
+ssize_t onefilefs_append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
+    struct file *file = iocb->ki_filp;
+    struct inode *inode = file_inode(file);
     struct super_block *sb = inode->i_sb;
     struct buffer_head *bh;
     int block_to_write;
     loff_t offset;
+    size_t len = iov_iter_count(from);
     size_t remaining_bytes = len;
     
-    //Use the current file size as the offset for appending (we ignore the off, as we allow append only).
-    loff_t append_offset = inode->i_size;
+    // Use the current file size as the offset for appending (we ignore the ki_pos, as we allow append only).
+    loff_t append_offset = i_size_read(inode);
 
-    //Calculate the block where the append operation should start.
+    // Calculate the block where the append operation should start.
     block_to_write = append_offset / DEFAULT_BLOCK_SIZE + 2; // +2 for superblock and inode block.
     offset = append_offset % DEFAULT_BLOCK_SIZE;
 
-    //Handle writes that extend beyond the current block.
-    //This simple example assumes writing within a single block for simplicity.
     if (offset + len > DEFAULT_BLOCK_SIZE)
         remaining_bytes = DEFAULT_BLOCK_SIZE - offset;
 
-    //Read the block where we need to append.
-    bh = (struct buffer_head *)sb_bread(sb, block_to_write);
+    bh = sb_bread(sb, block_to_write);
     if (!bh)
         return -EIO;
 
-    //Copy data from user buffer to the block buffer.
-    if (copy_from_user(bh->b_data + offset, buf, remaining_bytes)) {
-        brelse(bh); //Release the buffer head.
+    // Copy data from iov_iter to the block buffer. Notice the change here from copy_from_user.
+    size_t copied = copy_from_iter(bh->b_data + offset, remaining_bytes, from);
+    if (copied != remaining_bytes) {
+        brelse(bh); // Release the buffer head.
         return -EFAULT;
     }
 
-    //Mark the buffer dirty so it gets written back to disk.
     mark_buffer_dirty(bh);
     sync_dirty_buffer(bh);
     brelse(bh);
 
-    //Update the inode size to reflect the appended data.
-    inode->i_size += remaining_bytes;
+    // Update inode size and file position.
+    inode->i_size += copied;
     mark_inode_dirty(inode);
+    iocb->ki_pos += copied;  // Even if we're appending, it's good practice to update ki_pos.
 
-    //The offset parameter is not used for determining where to write,
-    //but it's updated to reflect the new end of the file after appending.
-    *off = inode->i_size;
-
-    return remaining_bytes;
+    return copied;
 }
+
 
 ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t * off) {
 
@@ -88,7 +135,7 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
     //compute the actual index of the the block to be read from device
     block_to_read = *off / DEFAULT_BLOCK_SIZE + 2; //the value 2 accounts for superblock and file-inode on device
     
-    printk("%s: read operation must access block %d of the device",MOD_NAME, block_to_read);
+    //printk("%s: read operation must access block %d of the device",MOD_NAME, block_to_read);
 
     bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, block_to_read);
     if(!bh){
@@ -174,5 +221,5 @@ const struct inode_operations onefilefs_inode_ops = {
 const struct file_operations onefilefs_file_operations = {
     .owner = THIS_MODULE,
     .read = onefilefs_read,
-    .write = onefilefs_append_write,
+    .write_iter = onefilefs_append_write_iter, //this is used by kernel_write
 };

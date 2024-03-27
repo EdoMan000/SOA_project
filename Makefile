@@ -81,19 +81,19 @@ define compile_singlefilemakefs
 endef
 
 define init_singlefilefs
-	@echo "Initializing singlefilefs..." && cd singlefile-FS && echo "---------------------------------------------" && dd bs=4096 count=100 if=/dev/zero of=image && ./singlefilemakefs image && mkdir ../log && echo "singlefilefs initialized successfully!";
+	@echo "Initializing singlefilefs..." && cd singlefile-FS && echo "---------------------------------------------" && dd bs=4096 count=100 if=/dev/zero of=image && ./singlefilemakefs image && mkdir /tmp/refmon_log && echo "singlefilefs initialized successfully!";
 endef
 
 define clean_singlefilefs
-	@echo "Cleaning singlefilefs module..." && rmdir log && cd singlefile-FS && rm singlefilemakefs && rm image && { make -C /lib/modules/$$(uname -r)/build M=$(PWD)/singlefile-FS clean > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,singlefilefs,clean); }
+	@echo "Cleaning singlefilefs module..." && rm -r /tmp/refmon_log && cd singlefile-FS && rm singlefilemakefs && rm image && { make -C /lib/modules/$$(uname -r)/build M=$(PWD)/singlefile-FS clean > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,singlefilefs,clean); }
 endef
 
 define mount_singlefilefs
-	@echo "Mounting singlefilefs FS..." && cd singlefile-FS && sudo mount -o loop -t singlefilefs image ../log/ && echo "FS successfully mounted!";
+	@echo "Mounting singlefilefs FS..." && cd singlefile-FS && sudo mount -o loop -t singlefilefs image /tmp/refmon_log/ && echo "FS successfully mounted!";
 endef
 
 define unmount_singlefilefs
-	@echo "Unmounting singlefilefs FS..." && cd singlefile-FS && sudo umount ../log/ && echo "FS successfully unmounted!";
+	@echo "Unmounting singlefilefs FS..." && cd singlefile-FS && sudo umount /tmp/refmon_log/ && echo "FS successfully unmounted!";
 endef
 
 define compile_user
