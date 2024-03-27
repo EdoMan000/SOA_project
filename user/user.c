@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
 		printf(YELLOW "██║  ██║███████╗██║     ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║       ██║   ╚██████╔╝╚██████╔╝███████╗\n" RESET);
 		printf(YELLOW "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝       ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝\n\n" RESET);
 
-		printf(YELLOW "D E V E L O P E D    B Y       EdoMan000 - m: 0333574 e: manenti000@gmail.com                \n" RESET);
+		printf(YELLOW "     D E V E L O P E D    B Y       EdoMan000 [ 0333574 | manenti000@gmail.com ]             \n" RESET);
 		printf("\n\n");
 
 
