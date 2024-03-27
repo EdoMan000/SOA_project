@@ -1,56 +1,102 @@
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <unistd.h>
+
+//this is for copy-paste during testing:
+// Th15_I5_4_t3s7_p4s5W0rd
+// /home/manenti_0333574/Scaricati/test.txt
+
+// ANSI color codes
+#define RED "\x1B[31m"
+#define GREEN "\x1B[32m"
+#define YELLOW "\x1B[33m"
+#define RESET "\x1B[0m"
+
+#define REFMON_MANAGE_SYSCALL 134 // syscall number for refmon_manage
+#define REFMON_RECONFIGURE_SYSCALL 156 // syscall number for refmon_reconfigure
 
 typedef enum {
     REFMON_ACTION_PROTECT,
     REFMON_ACTION_UNPROTECT
 } refmon_action_t;
 
-#ifndef __NR_refmon_manage
-#define __NR_refmon_manage 134
-#endif
+int invoke_refmon_manage(int action);
+int invoke_refmon_reconfigure(refmon_action_t action, const char* password, const char* path);
 
-#ifndef __NR_refmon_reconfigure
-#define __NR_refmon_reconfigure 156
-#endif
+int main(int argc, char** argv) {
+    char last_output[256] = ""; 
 
-int main(int argc, char** argv)
-{
-	//default values for password and path to test
-	char* passw = "Th15_I5_4_t3s7_p4s5W0rd"; 
-	char* path = "/home/manenti_0333574/Scaricati/test.txt";
+    while (1) {
+        system("clear"); 
 
-	if (argc < 3) {
-		printf("Usage: %s <syscall_code> <param1> [optional]<param2> <param3>...\n", argv[0]);
-		return 1;
-	}
-	int syscall_code = atoi(argv[1]);
+        printf(YELLOW "██████╗ ███████╗███████╗███╗   ███╗ ██████╗ ███╗   ██╗    ████████╗ ██████╗  ██████╗ ██╗     \n" RESET);
+		printf(YELLOW "██╔══██╗██╔════╝██╔════╝████╗ ████║██╔═══██╗████╗  ██║    ╚══██╔══╝██╔═══██╗██╔═══██╗██║     \n" RESET);
+		printf(YELLOW "██████╔╝█████╗  █████╗  ██╔████╔██║██║   ██║██╔██╗ ██║       ██║   ██║   ██║██║   ██║██║     \n" RESET);
+		printf(YELLOW "██╔══██╗██╔══╝  ██╔══╝  ██║╚██╔╝██║██║   ██║██║╚██╗██║       ██║   ██║   ██║██║   ██║██║     \n" RESET);
+		printf(YELLOW "██║  ██║███████╗██║     ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║       ██║   ╚██████╔╝╚██████╔╝███████╗\n" RESET);
+		printf(YELLOW "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝       ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝\n\n" RESET);
 
-	switch (syscall_code) {
-		case __NR_refmon_manage:
-			int state_code = atoi(argv[2]);
-			return syscall(syscall_code, state_code);
-			break;
-		case __NR_refmon_reconfigure:
-			refmon_action_t action;
-			if (strcmp(argv[2], "protect") == 0) {
-					action = REFMON_ACTION_PROTECT;
-			} else if (strcmp(argv[2], "unprotect") == 0) {
-					action = REFMON_ACTION_UNPROTECT;
-			} else {
-					fprintf(stderr, "Invalid action: %s\n", argv[2]);
-					return EXIT_FAILURE;
-			}
-			if (argc >= 4)
-				passw = argv[3];
-			if (argc >= 5)
-				path = argv[4];
-			return syscall(syscall_code, action, passw, path);
-		default:
-			printf("Invalid syscall_code. No action performed.\n");
-			return -1;
-	}
+		printf(YELLOW "D E V E L O P E D    B Y       EdoMan000 - m: 0333574 e: manenti000@gmail.com                \n" RESET);
+		printf("\n\n");
+
+
+        printf(YELLOW "Choose an option:\n" RESET);
+        printf(YELLOW "1. Manage reference monitor state\n" RESET);
+        printf(YELLOW "2. Reconfigure reference monitor\n" RESET);
+        printf(YELLOW "3. Exit\n\n" RESET);
+        printf("[NB:] The log of illegal accesses to protected files/directories can be accessed at\n     '/tmp/refmon_log/the-refmon-log' at any time!\n\n");
+        printf("%s", last_output); // Display the last output message
+        printf(YELLOW ">>> " RESET);
+
+        int option, result;
+        scanf("%d", &option);
+        getchar(); 
+
+        switch (option) {
+            case 1:
+                printf(YELLOW "\nEnter new state (0: OFF, 1: ON, 2: REC-OFF, 3: REC-ON, 4: QUERY_STATE): " RESET);
+                int newState;
+                scanf("%d", &newState);
+                if(newState > 4 || newState < 0){
+                    snprintf(last_output, sizeof(last_output), RED "Invalid state: %d\n\n" RESET, newState);
+                    result = 12345;
+                    break;
+                }
+                result = invoke_refmon_manage(newState);
+                break;
+            case 2:
+                char action[10], password[256], path[256];
+                printf(YELLOW "\nEnter action (protect/unprotect): " RESET);
+                scanf("%s", action);
+                refmon_action_t action_t = strcmp(action, "protect") == 0 ? REFMON_ACTION_PROTECT : REFMON_ACTION_UNPROTECT;
+                printf(YELLOW "Enter password: " RESET);
+                scanf("%s", password);
+                printf(YELLOW "Enter path: " RESET);
+                scanf("%s", path);
+                result = invoke_refmon_reconfigure(action_t, password, path);
+                break;
+            case 3:
+                printf(RED "\nBye bye...\n" RESET);
+                return EXIT_SUCCESS;
+            default:
+                snprintf(last_output, sizeof(last_output), RED "Invalid option: %d\n\n" RESET, option);
+                result = 12345;
+        }
+
+        // Update the last output message based on the operation result
+        if (result == 0) {
+            snprintf(last_output, sizeof(last_output), GREEN "[RES:] Last operation completed successfully. Please check 'sudo dmesg' for more details.\n\n" RESET);
+        } else if (result != 12345) {
+            snprintf(last_output, sizeof(last_output), RED "[RES:] Last operation did not complete successfully. Please check 'sudo dmesg' for more details.\n\n" RESET);
+        }
+    }
+}
+
+int invoke_refmon_manage(int action) {
+    return syscall(REFMON_MANAGE_SYSCALL, action);
+}
+
+int invoke_refmon_reconfigure(refmon_action_t action, const char* password, const char* path) {
+    return syscall(REFMON_RECONFIGURE_SYSCALL, action, password, path);
 }

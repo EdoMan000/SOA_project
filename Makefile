@@ -104,6 +104,12 @@ define clean_user
 	@echo "Cleaning user code..." && rm user.out && echo "user code cleaning successful!";
 endef
 
+up: all mount
+	@echo "Refmon is up."
+
+down: unmount clean
+	@echo "Refmon is down."
+
 all:
 	$(call build_module,the_usctm,usctm)
 	$(call build_module,.,reference-monitor)
