@@ -27,13 +27,19 @@ endef
 define insmod_module
 	@if [ "$1" = "reference-monitor" ]; then \
 		echo "Mounting reference-monitor module..." && { sudo insmod the_reference-monitor.ko the_syscall_table=$$(sudo cat /sys/module/the_usctm/parameters/sys_call_table_address) the_refmon_secret=$$(sudo cat secret) > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,reference-monitor,mount); } \
-	else \
+	elif [ "$1" = "usctm" ]; then \
 		echo "Mounting usctm module..." && { cd the_usctm && sudo insmod the_usctm.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,usctm,mount); } \
+	else \
+		echo "Mounting singlefilefs module..." && { cd singlefile-FS && sudo insmod singlefilefs.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,singlefilefs,mount); } \
 	fi
 endef
 
 define rmmod_module
-	@echo "Unmounting $2 module..." && { cd $1 && sudo rmmod the_$2.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,$2,unmount); }
+	@if [ "$2" = "singlefilefs" ]; then \
+		echo "Unmounting $2 module..." && { cd $1 && sudo rmmod $2.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,$2,unmount); } \
+	else \
+		echo "Unmounting $2 module..." && { cd $1 && sudo rmmod the_$2.ko > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,$2,unmount); } \
+	fi
 endef
 
 define check_reconfigurability
@@ -70,6 +76,26 @@ define set_parameter
 	fi
 endef
 
+define compile_singlefilemakefs
+	@echo "Compiling singlefilemakefs code..." && cd singlefile-FS && gcc singlefilemakefs.c -o singlefilemakefs && echo "singlefilemakefs code compilation successful!";
+endef
+
+define init_singlefilefs
+	@echo "Initializing singlefilefs..." && cd singlefile-FS && echo "---------------------------------------------" && dd bs=4096 count=100 if=/dev/zero of=image && ./singlefilemakefs image && mkdir ../log && echo "singlefilefs initialized successfully!";
+endef
+
+define clean_singlefilefs
+	@echo "Cleaning singlefilefs module..." && rmdir log && cd singlefile-FS && rm singlefilemakefs && rm image && { make -C /lib/modules/$$(uname -r)/build M=$(PWD)/singlefile-FS clean > $(TMP_FILE) 2>&1; EXIT_CODE=$$?; $(call handle_exit_code,$$EXIT_CODE,singlefilefs,clean); }
+endef
+
+define mount_singlefilefs
+	@echo "Mounting singlefilefs FS..." && cd singlefile-FS && sudo mount -o loop -t singlefilefs image ../log/ && echo "FS successfully mounted!";
+endef
+
+define unmount_singlefilefs
+	@echo "Unmounting singlefilefs FS..." && cd singlefile-FS && sudo umount ../log/ && echo "FS successfully unmounted!";
+endef
+
 define compile_user
 	@echo "Compiling user code..." && cd user && gcc user.c -o ../user.out && echo "user code compilation successful!";
 endef
@@ -81,20 +107,28 @@ endef
 all:
 	$(call build_module,the_usctm,usctm)
 	$(call build_module,.,reference-monitor)
+	$(call compile_singlefilemakefs)
+	$(call build_module,singlefile-FS,singlefilefs)
+	$(call init_singlefilefs)
 	$(call compile_user)
 
 clean:
 	$(call clean_module,the_usctm,usctm)
 	$(call clean_module,.,reference-monitor)
+	$(call clean_singlefilefs)
 	$(call clean_user)
 
 mount:
 	$(call insmod_module,usctm)
 	$(call insmod_module,reference-monitor)
+	$(call insmod_module,singlefilefs)
+	$(call mount_singlefilefs)
 
 unmount:
 	$(call rmmod_module,the_usctm,usctm)
 	$(call rmmod_module,.,reference-monitor)
+	$(call unmount_singlefilefs)
+	$(call rmmod_module,singlefile-FS,singlefilefs)
 
 check:
 	$(call check_reconfigurability)

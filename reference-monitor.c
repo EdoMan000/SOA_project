@@ -154,7 +154,7 @@ typedef struct _file_audit_log {
 
 
 
-#define FILE_PATH "/home/manenti_0333574/Scaricati/audit_log.txt"
+#define LOG_FILE_PATH "./log/the-refmon-log"
 
 static void write_audit_log(struct work_struct *work) {
         file_audit_log *log = container_of(work, file_audit_log, the_work);
@@ -267,7 +267,7 @@ static void write_audit_log(struct work_struct *work) {
                 log->description, timestamp, log->tgid, log->tid, log->uid, log->euid, 
                 paths, log->program_pathname, hash_hex);
         // Write to the log file
-        file = filp_open(FILE_PATH, O_WRONLY | O_CREAT | O_APPEND, 0600);
+        file = filp_open(LOG_FILE_PATH, O_WRONLY | O_APPEND, 0);
         if (!IS_ERR(file)) {
                 ssize_t written = kernel_write(file, log_entry, len - 1, &file->f_pos);
                 if (written < 0) {
