@@ -135,35 +135,18 @@ int main(int argc, char** argv) {
                     result = 12345;
                     break; 
                 }
-                // if(newState > 4 || newState < 0){
-                //     snprintf(last_output, sizeof(last_output), RED "Invalid state: %d\n\n" RESET, newState);
-                //     result = 12345;
-                //     break;
-                // }
                 result = invoke_refmon_manage(newState);
                 break;
             case 2:
-                char password[256], path[256];
-                printf(YELLOW "\nEnter action:\n" RESET);
-                printf(YELLOW "[0] protect\n" RESET);
-                printf(YELLOW "[1] unprotect\n" RESET);
-                printf(YELLOW ">>> " RESET);
-                int action = read_menu_option(); 
-                if (action == -1) {
-                    snprintf(last_output, sizeof(last_output), RED "Invalid option. Please enter a valid number.\n\n" RESET);
-                    result = 12345;
-                    break; 
-                }
-                // if(action > 1 || action < 0){
-                //     snprintf(last_output, sizeof(last_output), RED "Invalid action: %d\n\n" RESET, action);
-                //     result = 12345;
-                //     break;
-                // }
-                refmon_action_t action_t = action == 0 ? REFMON_ACTION_PROTECT : REFMON_ACTION_UNPROTECT;
+                char action[10], password[256], path[256];
+                printf(YELLOW "\nEnter action (protect/unprotect): " RESET);
+                scanf("%s", action);
+                refmon_action_t action_t = strcmp(action, "protect") == 0 ? REFMON_ACTION_PROTECT : REFMON_ACTION_UNPROTECT;
                 printf(YELLOW "Enter password: " RESET);
                 scanf("%s", password);
                 printf(YELLOW "Enter path: " RESET);
                 scanf("%s", path);
+                getchar();
                 result = invoke_refmon_reconfigure(action_t, password, path);
                 break;
             case 3:
