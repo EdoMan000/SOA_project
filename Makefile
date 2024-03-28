@@ -2,8 +2,6 @@ obj-m += the_reference-monitor.o
 the_reference-monitor-objs += reference-monitor.o lib/scth.o utils/sha256_utils.o utils/general_utils.o
 TMP_FILE := makefile_out.tmp
 
-
-
 define handle_exit_code
 	if [ "$$EXIT_CODE" -eq 0 ]; then \
 		echo "$2 module $3 successful!"; \

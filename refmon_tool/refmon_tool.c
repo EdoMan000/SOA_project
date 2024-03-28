@@ -14,10 +14,6 @@
 #include <string.h>
 #include <unistd.h>
 
-//this is for copy-paste during testing:
-// Th15_I5_4_t3s7_p4s5W0rd
-// /home/manenti_0333574/Scaricati/test.txt
-
 // ANSI color codes
 #define RED "\x1B[31m"
 #define GREEN "\x1B[32m"
