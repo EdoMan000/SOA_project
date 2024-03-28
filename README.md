@@ -4,7 +4,7 @@
 The examination requires fulfilling the development of a project in the Linux kernel.
 
 > [!NOTE] 
-> Official specification can be found at [The project specification](https://francescoquaglia.github.io/TEACHING/AOS/CURRENT/PROJECTS/project-specification-2023-2024.html)
+> The official specification can be found at [The project specification](https://francescoquaglia.github.io/TEACHING/AOS/CURRENT/PROJECTS/project-specification-2023-2024.html)
 
 # About the provided implementation of the reference-monitor module
 
