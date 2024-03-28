@@ -105,10 +105,10 @@ define clean_refmon_tool
 endef
 
 up: all mount
-	@echo "REFMON IS UP.\n\n You can now run refmon_tool_run to easily interact with it.\n NB:] EUID 0 is required."
+	@echo "REFMON IS UP.\n\n You can now run refmon_tool_run to easily interact with it.\n NB:] EUID 0 is required.\n\n"
 
 down: unmount clean
-	@echo "REFMON IS DOWN."
+	@echo "REFMON IS DOWN.\n\n"
 
 all:
 	$(call build_module,the_usctm,usctm)
