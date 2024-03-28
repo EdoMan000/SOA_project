@@ -29,7 +29,7 @@ This guide assumes you have basic knowledge of compiling kernel modules and usin
 > All of the code was developed and tested on kernel version 
 > - 6.5.0-26-generic
 > - 6.2.0-34-generic 
-> - 5.15.0-25-generic.
+> - 5.15.0-25-generic
 
 ### Compiling and mounting everything
 1. Clone the repo in your local machine:
