@@ -103,7 +103,7 @@ define clean_refmon_tool
 endef
 
 up: all mount tool
-	@echo "REFMON IS UP.\n\n You can now run refmon_tool_run to easily interact with it.\n NB:] EUID 0 is required.\n\n"
+	@echo "REFMON IS UP.\n\n You can now run "sudo ./refmon_tool_run" to easily interact with it.\n NB:] beware of using sudo because EUID 0 is required.\n\n"
 
 down: unmount clean
 	@echo "REFMON IS DOWN.\n\n"
