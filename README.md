@@ -1,4 +1,5 @@
-# SOA_project -> | Kernel Level Reference Monitor for File Protection | 
+# SOA_project 
+## | Kernel Level Reference Monitor for File Protection | 
 
 The examination requires fulfilling the development of a project in the Linux kernel, which must comply with the following specification.
 
