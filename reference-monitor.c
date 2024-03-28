@@ -67,7 +67,6 @@ MODULE_DESCRIPTION("reference monitor");
 #define RECONF_ENABLED 1
 #define RECONF_DISABLED 0
 #define MAX_PASSW_LEN 32
-#define AUDIT if(1)
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))
 #define LOG_FILE_PATH "/tmp/refmon_log/the-refmon-log"
 
@@ -106,7 +105,7 @@ typedef struct _refmon {
         struct list_head protected_paths;           
 } refmon;
 
-typedef struct _file_audit_log {
+typedef struct _file_intrusion_log {
         const char *description;
         const char *path1;
         const char *path2;
@@ -116,7 +115,7 @@ typedef struct _file_audit_log {
         uid_t euid;
         char *program_pathname;
         struct work_struct the_work;
-} file_audit_log;
+} file_intrusion_log;
 
 
 refmon reference_monitor;
@@ -132,12 +131,23 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};
 
 unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0);
+MODULE_PARM_DESC(the_syscall_table, "Retrieved syscall table address");
+
+static int __NR_sys_refmon_manage = -1; //starting not set
+module_param(__NR_sys_refmon_manage, int, 0444);
+MODULE_PARM_DESC(__NR_sys_refmon_manage, "The number of the first hacked syscall: sys_refmon_manage");
+
+static int __NR_sys_refmon_reconfigure = -1; //starting not set
+module_param(__NR_sys_refmon_reconfigure, int, 0444);
+MODULE_PARM_DESC(__NR_sys_refmon_reconfigure, "The number of the second hacked syscall: sys_refmon_reconfigure");
 
 static int the_refmon_reconf = RECONF_ENABLED;//starting as REC-OFF 
-module_param(the_refmon_reconf,int,0660); //NB:] this can be configured at run time via the sys file system -> 1 means the reference monitor can be currently reconfigured
+module_param(the_refmon_reconf,int,0660); //NB:] this can be configured at run time via the sys file system
+MODULE_PARM_DESC(the_refmon_reconf, "The flag indicating reconfiguration of the reference monitor, 1 means the reference monitor can be currently reconfigured");
 
 static unsigned char the_refmon_secret[MAX_PASSW_LEN]; 
 module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
+MODULE_PARM_DESC(the_refmon_secret, "The password needed for reconfiguration of the reference monitor");
 
 //==================================
 //   D E F E R R E D    W O R K   ||
@@ -147,21 +157,21 @@ module_param_string(the_refmon_secret, the_refmon_secret, MAX_PASSW_LEN, 0);
  * @brief Performs deferred writing of illegal accesses to protected files/dirs.
  *
  *      This function is designed to run in the context of a workqueue. It takes the
- *      content prepared in a file_audit_log structure and writes it to a specified
+ *      content prepared in a file_intrusion_log structure and writes it to a specified
  *      log file. The function handles formatting of the log entry, computing a hash
  *      of the program content, and writing the formatted log entry to the file. This
  *      process is done in a deferred manner to minimize the impact on the main execution
  *      flow of the program.
  *
- * @param work Pointer to the work_struct embedded in a file_audit_log structure.
+ * @param work Pointer to the work_struct embedded in a file_intrusion_log structure.
  *             This structure contains all necessary information to generate the log entry.
  *
  * NB:] The log entry includes the process and thread IDs, user IDs, program pathname,
  *      and a SHA-256 hash of the program's content. If any step in the process fails,
  *      appropriate error messages are logged using the logging facilities.
  */
-static void write_audit_log(struct work_struct *work) {
-        file_audit_log *log = container_of(work, file_audit_log, the_work);
+static void write_intrusion_log(struct work_struct *work) {
+        file_intrusion_log *log = container_of(work, file_intrusion_log, the_work);
         struct file *file;
         char *log_entry;
         char hash_hex[SHA256_DIGEST_SIZE * 2 + 1];
@@ -310,25 +320,25 @@ char *get_current_exe_path(void) {
 }
 
 /**
- * @brief Schedules a work item to asynchronously write audit log entries for illegal accesses to protected files/dirs.
+ * @brief Schedules a work item to asynchronously write intrusion log entries for illegal accesses to protected files/dirs.
  *
- *      Initializes a file_audit_log structure with details of the audit event, including
+ *      Initializes a file_intrusion_log structure with details of the intrusion event, including
  *      descriptions of the event, paths involved, process and user identifiers, and the
  *      pathname of the program executing the operation. It then schedules a deferred
- *      work task to compute the hash of the program content and write this data into an audit log file.
+ *      work task to compute the hash of the program content and write this data into an intrusion log file.
  *
  * NB:] This approach allows the logging operation to be performed outside the critical
  *      execution path, reducing potential performance impact on the system.
  *
- * @param description A brief description of the audit event.
- * @param path1 The primary path involved in the audit event (e.g. file path being accessed).
+ * @param description A brief description of the intrusion event.
+ * @param path1 The primary path involved in the intrusion event (e.g. file path being accessed).
  * @param path2 The secondary path involved in the event (e.g. destination path in a move operation), if applicable.
  *
- * NB:] The memory for the file_audit_log structure and any dynamic strings it contains (such as pathname)
- *      is allocated here and must be freed by the `write_audit_log` function after logging is complete.
+ * NB:] The memory for the file_intrusion_log structure and any dynamic strings it contains (such as pathname)
+ *      is allocated here and must be freed by the `write_intrusion_log` function after logging is complete.
  */
-void submit_audit_log_work(const char *description, const char *path1, const char *path2) {
-        file_audit_log *log;
+void submit_intrusion_log_work(const char *description, const char *path1, const char *path2) {
+        file_intrusion_log *log;
 
         log = kzalloc(sizeof(*log), GFP_KERNEL);
         if (!log){
@@ -349,7 +359,7 @@ void submit_audit_log_work(const char *description, const char *path1, const cha
         }
         log->program_pathname = pathname;
 
-        __INIT_WORK(&log->the_work, write_audit_log, (unsigned long)&log->the_work);
+        __INIT_WORK(&log->the_work, write_intrusion_log, (unsigned long)&log->the_work);
         schedule_work(&log->the_work);
 }
 
@@ -451,8 +461,8 @@ static refmon_path *get_protected_path_entry(const char *kern_path_str) {
 
         list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
                 if (path_obj.dentry == entry->actual_path.dentry && path_obj.mnt == entry->actual_path.mnt) {
-                path_put(&path_obj); 
-                return entry;
+                        path_put(&path_obj); 
+                        return entry;
                 }
         }
 
@@ -504,7 +514,7 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         spin_lock(&reference_monitor.lock);
                         if(is_dentry_protected(dentry)){
                                 pathname = kstrdup(pathname, GFP_KERNEL);
-                                submit_audit_log_work("DENIED WRITE_ON", pathname, NULL);
+                                submit_intrusion_log_work("DENIED WRITE_ON", pathname, NULL);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
@@ -566,9 +576,9 @@ static int handler_security_inode_rename(struct kretprobe_instance *ri, struct p
                 if (!IS_ERR(old_pathname) && !IS_ERR(new_pathname)) {
                         old_pathname = kstrdup(old_pathname, GFP_KERNEL);
                         new_pathname = kstrdup(new_pathname, GFP_KERNEL);
-                        submit_audit_log_work("DENIED RENAMING", old_pathname, new_pathname);
+                        submit_intrusion_log_work("DENIED RENAMING", old_pathname, new_pathname);
                 } else {
-                        submit_audit_log_work("DENIED RENAMING", NULL, NULL);
+                        submit_intrusion_log_work("DENIED RENAMING", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -622,9 +632,9 @@ static int handler_security_inode_unlink_rmdir(struct kretprobe_instance *ri, st
 
                 if (!IS_ERR(pathname)) {
                         pathname = kstrdup(pathname, GFP_KERNEL);
-                        submit_audit_log_work("DENIED DELETION", pathname, NULL);
+                        submit_intrusion_log_work("DENIED DELETION", pathname, NULL);
                 } else {
-                        submit_audit_log_work("DENIED DELETION", NULL, NULL);
+                        submit_intrusion_log_work("DENIED DELETION", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -685,9 +695,9 @@ static int handler_security_inode_create_mkdir(struct kretprobe_instance *ri, st
 
                 if (!IS_ERR(pathname)) {
                         pathname = kstrdup(pathname, GFP_KERNEL);
-                        submit_audit_log_work("DENIED CREATION", pathname, NULL);
+                        submit_intrusion_log_work("DENIED CREATION", pathname, NULL);
                 } else {
-                        submit_audit_log_work("DENIED CREATION", NULL, NULL);
+                        submit_intrusion_log_work("DENIED CREATION", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -756,9 +766,9 @@ static int handler_security_inode_link(struct kretprobe_instance *ri, struct pt_
                         //FILE -> old_pathname 2
                         old_pathname = kstrdup(old_pathname, GFP_KERNEL);
                         new_pathname = kstrdup(new_pathname, GFP_KERNEL);
-                        submit_audit_log_work("DENIED HARD-LNK", new_pathname, old_pathname);
+                        submit_intrusion_log_work("DENIED HARD-LNK", new_pathname, old_pathname);
                 } else {
-                        submit_audit_log_work("DENIED HARD-LNK", NULL, NULL);
+                        submit_intrusion_log_work("DENIED HARD-LNK", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -832,12 +842,13 @@ static int handler_security_inode_symlink(struct kretprobe_instance *ri, struct 
                 target_file_pathname = dentry_path_raw(target_file_dentry, target_file_path_buf, PATH_MAX);
 
                 if (!IS_ERR(pathname) && !IS_ERR(target_file_pathname)) {
-                        //SYM-LINK -> pathname FILE -> target_file_pathname
+                        //SYM-LINK -> pathname 1
+                        //FILE -> target_file_pathname 2
                         pathname = kstrdup(pathname, GFP_KERNEL);
                         target_file_pathname = kstrdup(target_file_pathname, GFP_KERNEL);
-                        submit_audit_log_work("DENIED SYMB-LNK", pathname, target_file_pathname);
+                        submit_intrusion_log_work("DENIED SYMB-LNK", pathname, target_file_pathname);
                 } else {
-                        submit_audit_log_work("DENIED SYMB-LNK", NULL, NULL);
+                        submit_intrusion_log_work("DENIED SYMB-LNK", NULL, NULL);
                 }
                 regs->ax = (unsigned long) -EACCES;
                 return 0;
@@ -1071,7 +1082,7 @@ __SYSCALL_DEFINEx(1, _refmon_manage, int, code){
 asmlinkage long sys_refmon_manage(int code){
 #endif
         int ret = 0;
-        log_message(LOG_INFO, "sys_refmon_manage called from thread %d\n",current->pid);
+        //log_message(LOG_INFO, "sys_refmon_manage called from thread %d\n",current->pid);
 
         spin_lock(&reference_monitor.lock);
 
@@ -1145,12 +1156,12 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                         action_str = "REFMON_ACTION_UNPROTECT";
                         break;
                 default:
-                        log_message(LOG_ERR, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", "REFMON_ACTION_INVALID", kernel_passw, kernel_path, curr_pid);
+                        //log_message(LOG_ERR, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", "REFMON_ACTION_INVALID", kernel_passw, kernel_path, curr_pid);
                         kfree(kernel_passw);
                         kfree(kernel_path);
                         return -EINVAL;
         }
-        log_message(LOG_INFO, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", action_str, kernel_passw, kernel_path, curr_pid);
+        //log_message(LOG_INFO, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", action_str, kernel_passw, kernel_path, curr_pid);
 
         spin_lock(&reference_monitor.lock);
 
@@ -1279,6 +1290,8 @@ int init_module(void) {
         new_sys_call_array[0] = (unsigned long)sys_refmon_manage;
         new_sys_call_array[1] = (unsigned long)sys_refmon_reconfigure;
         ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
+        __NR_sys_refmon_manage = (int)restore[0];
+        __NR_sys_refmon_reconfigure = (int)restore[1];
         if (ret != HACKED_ENTRIES){
                 log_message(LOG_ERR, "could not hack %d entries (just %d)\n",HACKED_ENTRIES,ret);
                 return -1;
@@ -1286,6 +1299,7 @@ int init_module(void) {
         unprotect_memory();
         for(i=0;i<HACKED_ENTRIES;i++){
                 ((unsigned long *)the_syscall_table)[restore[i]] = (unsigned long)new_sys_call_array[i];
+                
         }
         protect_memory();
         log_message(LOG_INFO, "all new system-calls correctly installed on sys-call table\n");

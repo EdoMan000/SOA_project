@@ -32,7 +32,7 @@ In addition to the above specifics, the project should also include the realizat
 ## Included Parts
 - **the_utscm module:** An embedded module leveraged by the reference-monitor module to discover the memory positioning of the Linux system_call_table.
 - **scth:** A linux kernel lib  which implements the dynamc discovery of the position of the sys_call_table and the identifiction of entries pointing to sys_ni_syscall
-- **singlefile-FS module:** A filesystem module that supports a single append-only file, modified by me to use it primarily for writing audit logs.
+- **singlefile-FS module:** A filesystem module that supports a single append-only file, modified by me to use it primarily for writing intrusion logs.
 - **reference-monitor module:** the Linux Kernel Module which implements a reference monitor based on a set of file system paths, providing two new system calls.
 - **Refmon Tool:** A simple CLI tool to interact with the refmon module, invoking its system calls.
 

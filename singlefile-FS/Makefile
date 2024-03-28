@@ -14,16 +14,16 @@ unload-FS-driver:
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 	rm singlefilemakefs
-	rmdir ../log
+	rmdir /tmp/refmon_log
 	rm image
 
 create-fs:
 	dd bs=4096 count=100 if=/dev/zero of=image
 	./singlefilemakefs image
-	mkdir ../log
+	mkdir /tmp/refmon_log
 	
 mount-fs:
-	sudo mount -o loop -t singlefilefs image ../log/
+	sudo mount -o loop -t singlefilefs image /tmp/refmon_log/
 
 unmount-fs:
-	sudo umount ../log/
+	sudo umount /tmp/refmon_log/

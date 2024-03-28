@@ -95,14 +95,14 @@ define unmount_singlefilefs
 endef
 
 define compile_refmon_tool
-	@echo "Compiling refmon_tool..." && cd refmon_tool && gcc refmon_tool.c -o ../refmon_tool_run && echo "refmon_tool compilation successful!";
+	@echo "Compiling refmon_tool..." && cd refmon_tool && echo "//syscall number for sys_refmon_manage\n#define __NR_sys_refmon_manage $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_manage)\n//syscall number for sys_refmon_reconfigure\n#define __NR_sys_refmon_reconfigure $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_reconfigure)\n" > syscall_nums.h && gcc refmon_tool.c -o ../refmon_tool_run && echo "refmon_tool compilation successful!";
 endef
 
 define clean_refmon_tool
 	@echo "Cleaning refmon_tool..." && rm refmon_tool_run && echo "refmon_tool cleaning successful!";
 endef
 
-up: all mount
+up: all mount tool
 	@echo "REFMON IS UP.\n\n You can now run refmon_tool_run to easily interact with it.\n NB:] EUID 0 is required.\n\n"
 
 down: unmount clean
@@ -114,6 +114,8 @@ all:
 	$(call compile_singlefilemakefs)
 	$(call build_module,singlefile-FS,singlefilefs)
 	$(call init_singlefilefs)
+
+tool:
 	$(call compile_refmon_tool)
 
 clean:
