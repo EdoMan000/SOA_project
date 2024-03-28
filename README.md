@@ -58,6 +58,7 @@ If you want some sort of a slower process (i would ask you why) there still are 
 ```make
    make all
    make mount
+   make tool
    make unmount
    make clean
 ```
