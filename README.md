@@ -24,6 +24,9 @@ In addition to the above specifics, the project should also include the realizat
 
 **NB:]** The computation of the cryptographic hash and the writing of the above tuple should be carried in deferred work. <br>
 
+> [!NOTE] 
+> Official documentation can be found at [Official Specification](https://francescoquaglia.github.io/TEACHING/AOS/CURRENT/PROJECTS/project-specification-2023-2024.html)
+
 # About the provided implementation of the reference-monitor module
 
 ## Included Parts
