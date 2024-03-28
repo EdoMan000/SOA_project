@@ -883,7 +883,8 @@ static struct kretprobe *my_kretprobes[] = {
  *      attempting to register each. It logs the outcome of each registration attempt.
  */
 void register_my_kretprobes(void) {
-        for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        int i;
+        for (i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
                 int ret = register_kretprobe(my_kretprobes[i]);
                 if (ret < 0) {
                         log_message(LOG_ERR, "kretprobe '%s' registration failed: %d\n", my_kretprobes[i]->kp.symbol_name, ret);
@@ -900,7 +901,8 @@ void register_my_kretprobes(void) {
  *      attempting to unregister each. It logs the outcome of each unregistration attempt.
  */
 void unregister_my_kretprobes(void) {
-        for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        int i;
+        for (i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
                 unregister_kretprobe(my_kretprobes[i]);
                 log_message(LOG_INFO, "kretprobe '%s' unregistered\n", my_kretprobes[i]->kp.symbol_name);
         }
@@ -913,7 +915,8 @@ void unregister_my_kretprobes(void) {
  *      attempting to enable each. It logs the outcome of each enable attempt.
  */
 void enable_my_kretprobes(void) {
-        for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        int i;
+        for (i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
                 int ret = enable_kretprobe(my_kretprobes[i]);
                 if (ret < 0) {
                         log_message(LOG_ERR, "Failed to enable kretprobe '%s': %d\n", my_kretprobes[i]->kp.symbol_name, ret);
@@ -930,7 +933,8 @@ void enable_my_kretprobes(void) {
  *      attempting to disable each. It logs the outcome of each disable attempt.
  */
 void disable_my_kretprobes(void) {
-    for (int i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
+        int i;
+        for (i = 0; i < ARRAY_SIZE(my_kretprobes); i++) {
         disable_kretprobe(my_kretprobes[i]);
         log_message(LOG_INFO, "Kretprobe '%s' disabled\n", my_kretprobes[i]->kp.symbol_name);
     }
