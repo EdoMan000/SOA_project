@@ -39,6 +39,7 @@
 #include <linux/interrupt.h>
 #include <linux/time.h>
 #include <linux/ktime.h>
+#include <linux/workqueue.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
 #include <asm/page.h>
@@ -95,6 +96,7 @@ typedef enum state {
 typedef struct _refmon_path {
         struct path actual_path;
         unsigned long inode;
+        uint64_t deadline_TTL;
         struct list_head list;
 } refmon_path;
 
@@ -117,6 +119,7 @@ typedef struct _file_intrusion_log {
         struct work_struct the_work;
 } file_intrusion_log;
 
+uint64_t refmon_time = 0;
 
 refmon reference_monitor;
 
@@ -152,6 +155,54 @@ MODULE_PARM_DESC(the_refmon_secret, "The password needed for reconfiguration of 
 //==================================
 //   D E F E R R E D    W O R K   ||
 //==================================
+
+/**
+ * @brief Periodically checks and removes expired protected paths based on their TTL (Time-To-Live).
+ *
+ *      This function is designed to run within a workqueue context and is scheduled to execute
+ *      at regular intervals of 1 minutes. It iterates through the list of protected paths that 
+ *      are maintained by the reference monitor and checks if any paths have reached their 
+ *      specified TTL. If a path's TTL has expired, the function removes it from the protection 
+ *      list, releases associated resources, and logs the event. This mechanism ensures that paths
+ *      are protected only for their intended duration.
+ *
+ * @param work Pointer to the work_struct used by the delayed work mechanism.
+ *
+ * NB:] Paths with a `deadline_TTL` set to `UINT_MAX` are considered to have an infinite TTL
+ *      and are not subject to expiration.
+ */
+void increase_time(struct work_struct *work);
+DECLARE_DELAYED_WORK(the_time_increaser, increase_time);
+void increase_time(struct work_struct *work) {
+        char path_buf[PATH_MAX];
+        char *pathname;
+        refmon_path *entry, *tmp;;
+
+        spin_lock(&reference_monitor.lock); 
+        list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
+                if(entry->deadline_TTL == UINT_MAX){
+                        continue;
+                } else{
+                        if (refmon_time >= entry->deadline_TTL) {
+                                pathname = dentry_path_raw(entry->actual_path.dentry, path_buf, PATH_MAX);
+                                list_del(&entry->list);
+                                path_put(&entry->actual_path); 
+                                kfree(entry);
+                                if (!IS_ERR(pathname)) {
+                                       pathname = kstrdup(pathname, GFP_ATOMIC);
+                                       log_message(LOG_INFO, "Path '%s' TTL expired. Won't be protected anymore.\n", pathname);
+                                       kfree(pathname);
+                                } else {
+                                       log_message(LOG_INFO, "Path 'Could_not_resolve_path' TTL expired. Won't be protected anymore.\n");
+                                }
+                        }
+                }  
+        }
+        spin_unlock(&reference_monitor.lock);
+
+        refmon_time ++;
+        schedule_delayed_work(&the_time_increaser, msecs_to_jiffies(60000));
+}
 
 /**
  * @brief Performs deferred writing of illegal accesses to protected files/dirs.
@@ -513,7 +564,7 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
                         if(is_dentry_protected(dentry)){
-                                pathname = kstrdup(pathname, GFP_KERNEL);
+                                pathname = kstrdup(pathname, GFP_ATOMIC);
                                 submit_intrusion_log_work("DENIED WRITE_ON", pathname, NULL);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
@@ -1060,7 +1111,7 @@ static void print_current_refmon_state(void){
                         if (IS_ERR(pathname)) {
                                 log_message(LOG_ERR, "Error converting path to string\n");
                         } else {
-                                log_message(LOG_INFO, "Protected path: %s\n", pathname);
+                                log_message(LOG_INFO, "Protected path: %s [TTL: %d min]\n", pathname, (entry->deadline_TTL-refmon_time));
                         }
                         free_page((unsigned long)buf);
                 }
@@ -1131,12 +1182,13 @@ exit:
  * @param password A user-space string containing the password for authentication.
  * @param path A user-space string specifying the path to add or remove from the protected list.
  * @param action Specifies the action to be taken: adding or removing a path. Specified by refmon_action_t struct.
+ * @param path_ttl time to live in minutes of the protection of that path. -1 for infinite protection.
  * @return 0 on success, negative error code on failure.
  */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(3, _refmon_reconfigure, refmon_action_t, action, char __user *, passw, char __user *, path){
+__SYSCALL_DEFINEx(4, _refmon_reconfigure, refmon_action_t, action, char __user *, passw, char __user *, path, int __user, path_ttl){
 #else
-asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *passw, char __user *path){
+asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *passw, char __user *path, int __user path_ttl){
 #endif
         int ret = 0;
         pid_t curr_pid = current->pid;
@@ -1187,7 +1239,7 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                         switch (is_path_protected(kernel_path))
                         {
                                 case 0:
-                                        the_refmon_path = kmalloc(sizeof(*the_refmon_path), GFP_KERNEL);
+                                        the_refmon_path = kmalloc(sizeof(*the_refmon_path), GFP_ATOMIC);
                                         if (!the_refmon_path) {
                                                 log_message(LOG_ERR, "Couldn't allocate memory for new refmon path.\n");
                                                 ret = -1;
@@ -1195,8 +1247,13 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                                         }
                                         kern_path(kernel_path, LOOKUP_FOLLOW, &the_refmon_path->actual_path);
                                         the_refmon_path->inode = d_backing_inode(the_refmon_path->actual_path.dentry)->i_ino;
+                                        if (path_ttl < 0){
+                                                the_refmon_path->deadline_TTL = UINT_MAX;
+                                        }else{
+                                                the_refmon_path->deadline_TTL = refmon_time + path_ttl;
+                                        }
                                         list_add(&the_refmon_path->list, &reference_monitor.protected_paths);
-                                        log_message(LOG_INFO, "Starting to monitor new path '%s'\n", kernel_path);
+                                        log_message(LOG_INFO, "Starting to monitor new path '%s' for %d minutes\n", kernel_path, path_ttl);
                                         ret = 0;
                                         goto exit;
                                 case 1:
@@ -1311,6 +1368,10 @@ int init_module(void) {
         log_message(LOG_INFO, "all kretprobes correctly registered\n");
         disable_my_kretprobes(); //starting as REC-OFF
 
+
+        schedule_delayed_work(&the_time_increaser, msecs_to_jiffies(60000));
+        log_message(LOG_INFO, "starting to increase refmon timer\n");
+
         return 0;
 
 }
@@ -1334,4 +1395,7 @@ void cleanup_module(void) {
 
         unregister_my_kretprobes();
         log_message(LOG_INFO, "all kretprobes correctly unregistered\n");
+
+        cancel_delayed_work_sync(&the_time_increaser);
+        log_message(LOG_INFO, "time increase delayed work canceled\n");
 }

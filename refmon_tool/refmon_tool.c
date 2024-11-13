@@ -83,8 +83,8 @@ static int invoke_refmon_manage(int action) {
     return syscall(__NR_sys_refmon_manage, action);
 }
 
-static int invoke_refmon_reconfigure(refmon_action_t action, const char* password, const char* path) {
-    return syscall(__NR_sys_refmon_reconfigure, action, password, path);
+static int invoke_refmon_reconfigure(refmon_action_t action, const char* password, const char* path, int ttl) {
+    return syscall(__NR_sys_refmon_reconfigure, action, password, path, ttl);
 }
 
 int main(int argc, char** argv) {
@@ -138,16 +138,33 @@ int main(int argc, char** argv) {
                 result = invoke_refmon_manage(newState);
                 break;
             case 2:
-                char action[10], password[256], path[256];
+                char action[10], password[256], path[256], ttl_input[16];
+                int ttl; // TTL in minutes
+
                 printf(YELLOW "\nEnter action (protect/unprotect): " RESET);
                 scanf("%s", action);
                 refmon_action_t action_t = strcmp(action, "protect") == 0 ? REFMON_ACTION_PROTECT : REFMON_ACTION_UNPROTECT;
+
                 printf(YELLOW "Enter password: " RESET);
                 scanf("%s", password);
+
                 printf(YELLOW "Enter path: " RESET);
                 scanf("%s", path);
+
+                printf(YELLOW "Enter TTL ('infinite' or a positive integer representing minutes): " RESET);
+                scanf("%s", ttl_input);
                 getchar();
-                result = invoke_refmon_reconfigure(action_t, password, path);
+                
+                if (strcmp(ttl_input, "infinite") == 0) {
+                    ttl = -1; // Assuming -1 will be used to represent an infinite TTL in invoke_refmon_reconfigure
+                } else {
+                    ttl = atoi(ttl_input); // Convert the TTL input to an integer
+                    if (ttl <= 0) {
+                        printf(RED "Invalid TTL value. Please enter 'infinite' or a positive integer.\n" RESET);
+                        break;
+                    }
+                }
+                result = invoke_refmon_reconfigure(action_t, password, path, ttl);
                 break;
             case 3:
                 retrieve_shell_cmd_output("dmesg | tail -n 10", "Failed to retrieve output. (Check if running tool with EUID set to 0)", "'sudo dmesg' tail output");

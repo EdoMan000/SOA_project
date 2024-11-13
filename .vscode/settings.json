@@ -15,6 +15,9 @@
         "cstdarg": "c",
         "sha256_utils.h": "c",
         "message_logging.h": "c",
-        "general_utils.h": "c"
+        "general_utils.h": "c",
+        "cacheflush.h": "c",
+        "vmalloc.h": "c",
+        "workqueue.h": "c"
     }
 }

@@ -78,7 +78,13 @@ int singlefilefs_fill_super(struct super_block *sb, void *data, int silent) {
 
     //baseline alignment of the FS timestamp to the current time
     ktime_get_real_ts64(&curr_time);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,7,0)
+    root_inode->__i_atime = root_inode->__i_mtime = root_inode->__i_ctime = curr_time;
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)
+    root_inode->i_atime = root_inode->i_mtime = root_inode->__i_ctime = curr_time;
+#else
     root_inode->i_atime = root_inode->i_mtime = root_inode->i_ctime = curr_time;
+#endif
 
     // no inode from device is needed - the root of our file system is an in memory object
     root_inode->i_private = NULL;
