@@ -1,5 +1,0 @@
-instead of syscall hacking -> ioctl
-
-singlefs for log file -> ioctl or procfs(see if possible in module?)
-
-RCU_READ or RW_LOCK instead of spinlock/unlock

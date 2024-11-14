@@ -48,6 +48,7 @@
 #include <asm/io.h>
 #include <linux/string.h>
 #include <linux/syscalls.h>
+#include <linux/blk_types.h>
 #include "lib/include/scth.h"
 #include "utils/include/sha256_utils.h"
 #include "utils/include/general_utils.h"
@@ -95,7 +96,9 @@ typedef enum state {
 
 typedef struct _refmon_path {
         struct path actual_path;
-        unsigned long inode;
+        unsigned long inode_number;
+        dev_t fs_bdev;
+        uuid_t fs_uuid;
         uint64_t deadline_TTL;
         struct list_head list;
 } refmon_path;
@@ -445,20 +448,21 @@ static int is_path_protected(const char *kern_path_str) {
 
 
 /**
- * @brief Checks if a given inode corresponds to a protected file.
+ * @brief Checks if a given inode_number corresponds to a protected file.
  * 
- * @param inode_num The inode number to check.
- * @return 1 if the inode is protected, 0 otherwise.
+ * @param inode_num The inode_number number to check.
+ * @param fs_uuid The file system uuid to univocally identify the inode together with the inode number.
+ * @return 1 if the inode_number is protected, 0 otherwise.
  */
-static int is_inode_protected(unsigned long inode_num) {
-        refmon_path *entry;
+static int is_inode_protected(unsigned long inode_num, uuid_t fs_uuid) {
+    refmon_path *entry;
 
-        list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
-                if (entry->inode == inode_num) {
-                        return 1; 
-                }
+    list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+        if (entry->inode_number == inode_num && memcmp((void *)&(entry->fs_uuid), (void *)&fs_uuid, sizeof(uuid_t)) == 0) { 
+            return 1; 
         }
-        return 0; 
+    }
+    return 0; 
 }
 
 /**
@@ -473,7 +477,7 @@ static int is_dentry_protected(struct dentry *dentry) {
         do {
                 unsigned long inode_num = d_is_positive(current_dentry) ? d_inode(current_dentry)->i_ino : 0;
 
-                if (inode_num && is_inode_protected(inode_num)) {
+                if (inode_num && is_inode_protected(inode_num, d_inode(current_dentry)->i_sb->s_uuid)) {
                         return 1; 
                 }
 
@@ -533,7 +537,7 @@ static refmon_path *get_protected_path_entry(const char *kern_path_str) {
  *      blocking the operation if so and logging the event.
  * 
  * NB:] existing symbolic or hard links to files are automatically managed because the check 
- *      is done on the inode of the protected file, triggering the probing in any case.
+ *      is done on the inode_number of the protected file, triggering the probing in any case.
  */
 
 struct krp_security_file_open_data {
@@ -573,6 +577,35 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         spin_unlock(&reference_monitor.lock);
                 }
         }
+
+//FIXME: DEV_T RESOLUTION NOT EXPORTED FOR NEWER VERSIONS OF THE KERNEL
+        char* buffer = kzalloc(4096, GFP_KERNEL);
+        char* path;
+        path = d_path(&file->f_path, buffer, 4096);
+        dev_t bdev;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,5,0)
+        //bdev = parse_root_device(path);
+        bdev = 0;
+#else
+        bdev = name_to_dev_t(path);
+#endif
+
+        refmon_path* entry;
+	if (bdev) {	
+                spin_lock(&reference_monitor.lock);
+		list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
+		        //check if device is protected
+			if (entry->fs_bdev == bdev) {
+				log_message(LOG_INFO, "Denied access on protected block_device %s -> (%d, %d)\n", path, MAJOR(bdev), MINOR(bdev));
+                                spin_unlock(&reference_monitor.lock);
+                                regs->ax = (unsigned long) -EACCES;
+                                return 0;
+			}
+		}
+                spin_unlock(&reference_monitor.lock);
+	}
+
+
         return 0; 
 }
 
@@ -1191,7 +1224,7 @@ __SYSCALL_DEFINEx(4, _refmon_reconfigure, refmon_action_t, action, char __user *
 asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *passw, char __user *path, int __user path_ttl){
 #endif
         int ret = 0;
-        pid_t curr_pid = current->pid;
+        //pid_t curr_pid = current->pid;
 
         refmon_path *the_refmon_path;
 
@@ -1246,7 +1279,9 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                                                 goto exit;
                                         }
                                         kern_path(kernel_path, LOOKUP_FOLLOW, &the_refmon_path->actual_path);
-                                        the_refmon_path->inode = d_backing_inode(the_refmon_path->actual_path.dentry)->i_ino;
+                                        the_refmon_path->fs_uuid = d_backing_inode(the_refmon_path->actual_path.dentry)->i_sb->s_uuid;
+                                        the_refmon_path->fs_bdev = d_backing_inode(the_refmon_path->actual_path.dentry)->i_sb->s_bdev->bd_dev;
+                                        the_refmon_path->inode_number = d_backing_inode(the_refmon_path->actual_path.dentry)->i_ino;
                                         if (path_ttl < 0){
                                                 the_refmon_path->deadline_TTL = UINT_MAX;
                                         }else{

@@ -18,6 +18,7 @@
         "general_utils.h": "c",
         "cacheflush.h": "c",
         "vmalloc.h": "c",
-        "workqueue.h": "c"
+        "workqueue.h": "c",
+        "early_lookup.h": "c"
     }
 }
