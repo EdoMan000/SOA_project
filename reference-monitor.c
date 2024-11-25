@@ -49,6 +49,7 @@
 #include <linux/string.h>
 #include <linux/syscalls.h>
 #include <linux/blk_types.h>
+#include <linux/blkdev.h>
 #include "lib/include/scth.h"
 #include "utils/include/sha256_utils.h"
 #include "utils/include/general_utils.h"
@@ -280,7 +281,7 @@ static void write_intrusion_log(struct work_struct *work) {
         hash_hex[SHA256_DIGEST_SIZE * 2] = '\0';
         // Get current timestamp
         ktime_get_real_ts64(&ts);
-        time64_to_tm(ts.tv_sec, 1, &tm); // Assuming UTC+1 time, hence the offset is 1
+        time64_to_tm(ts.tv_sec, 3600, &tm); // Assuming UTC+1 time, hence the offset is 3600 seconds
         snprintf(timestamp, sizeof(timestamp), "%02d:%02d:%02d", tm.tm_hour, tm.tm_min, tm.tm_sec);
 
         char paths[PATH_MAX*2 + 64];
@@ -296,6 +297,8 @@ static void write_intrusion_log(struct work_struct *work) {
                 len = snprintf(paths, sizeof(paths), "HARD LINK: %s\nFILE: %s\n", log->path1, log->path2);
         } else if (strcmp(log->description, "DENIED SYMB-LNK") == 0) {
                 len = snprintf(paths, sizeof(paths), "SYMBOLIC LINK: %s\nFILE: %s\n", log->path1, log->path2);
+        } else if (strcmp(log->description, "DENIED B_DEV_WR") == 0) {
+                len = snprintf(paths, sizeof(paths), "DEVICE: %s\n", log->path1);
         }
         //-----------------
         len = snprintf(NULL, 0,
@@ -341,6 +344,8 @@ cleanup:
         if(computed_hash) kfree(computed_hash);
         if(program_content) kfree(program_content);
         if (log->program_pathname) kfree(log->program_pathname);
+        if (log->path1) kfree(log->path1);
+        if (log->path2) kfree(log->path2);
         if (log_entry) kfree(log_entry);
         if(log) kfree(log);
 }
@@ -409,6 +414,8 @@ void submit_intrusion_log_work(const char *description, const char *path1, const
         char *pathname = get_current_exe_path();
         if(pathname == NULL){
                 log_message(LOG_ERR, "Couldn't get_current_exe_path to submit deferred work...\n\tDESC was: '%s'\n", description);
+                if(path1) kfree(path1);
+                if(path2) kfree(path2);
                 return;
         }
         log->program_pathname = pathname;
@@ -525,6 +532,42 @@ static refmon_path *get_protected_path_entry(const char *kern_path_str) {
         return NULL;
 }
 
+/**
+ * @brief Converts a device name to its corresponding device number (`dev_t`).
+ *
+ *      Validates that the provided device name starts with `/dev/` and attempts to
+ *      obtain the device number associated with the block device. This function uses
+ *      `lookup_bdev` to resolve the device name to a `struct block_device`, from
+ *      which it retrieves the device number. If the device name is invalid or the
+ *      lookup fails, it logs an error and returns 0.
+ *
+ * @param name The name of the device (e.g., `/dev/sda1`) to be converted.
+ * @return The device number (`dev_t`) corresponding to the device name, or 0 if an error occurs.
+ *
+ * NB:] The reference to the block device obtained from `lookup_bdev` is released
+ *      using `bdput` to prevent a reference leak.
+ */
+dev_t name_to_dev_t_new(const char *name)
+{
+    dev_t devt = 0;
+    int ret;
+
+    /* Ensure the name starts with "/dev/" */
+    if (strncmp(name, "/dev/", 5) != 0) {
+        //pr_err("Invalid device name: %s\n", name);
+        return 0;
+    }
+
+    /* Attempt to look up the device's dev_t using lookup_bdev */
+    ret = lookup_bdev(name, &devt);
+    if (ret < 0) {
+        //pr_err("Failed to lookup block device %s, error %d\n", name, ret);
+        return 0;
+    }
+
+    return devt;
+}
+
 //==================================
 //      K R E T P R O B E S       ||
 //==================================
@@ -560,43 +603,49 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
         struct krp_security_file_open_data *data = (struct krp_security_file_open_data *)ri->data;
         struct file* file = data->file;
 
+        char* buffer = kzalloc(4096, GFP_KERNEL);
+        char* path;
+        path = d_path(&file->f_path, buffer, 4096);
+
         if (file) {
                 if (file->f_mode & FMODE_WRITE) {
-                        char *pathname;
-                        char path_buf[PATH_MAX];
-                        struct dentry *dentry = file->f_path.dentry;
-                        pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
+                        // DENTRY_PATH_RAW wouldn't resolve full path for log
+                        // char *pathname;
+                        // char path_buf[PATH_MAX];
+                        // struct dentry *dentry = file->f_path.dentry;
+                        // pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
                         spin_lock(&reference_monitor.lock);
-                        if(is_dentry_protected(dentry)){
-                                pathname = kstrdup(pathname, GFP_ATOMIC);
-                                submit_intrusion_log_work("DENIED WRITE_ON", pathname, NULL);
+                        //if(is_dentry_protected(dentry)){
+                        if(is_dentry_protected(file->f_path.dentry)){
+                                //pathname = kstrdup(pathname, GFP_ATOMIC);
+                                //submit_intrusion_log_work("DENIED WRITE_ON", pathname, NULL);
+                                path = kstrdup(path, GFP_ATOMIC);
+                                submit_intrusion_log_work("DENIED WRITE_ON", path, NULL);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
                         }
                         spin_unlock(&reference_monitor.lock);
+
                 }
         }
-
-//FIXME: DEV_T RESOLUTION NOT EXPORTED FOR NEWER VERSIONS OF THE KERNEL
-        char* buffer = kzalloc(4096, GFP_KERNEL);
-        char* path;
-        path = d_path(&file->f_path, buffer, 4096);
         dev_t bdev;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,5,0)
-        //bdev = parse_root_device(path);
-        bdev = 0;
+        bdev = name_to_dev_t_new(path);
 #else
         bdev = name_to_dev_t(path);
 #endif
 
         refmon_path* entry;
 	if (bdev) {	
+                //log_message(LOG_INFO, "Checking block_device %s -> (%d, %d)\n", path, MAJOR(bdev), MINOR(bdev));
                 spin_lock(&reference_monitor.lock);
 		list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
 		        //check if device is protected
 			if (entry->fs_bdev == bdev) {
-				log_message(LOG_INFO, "Denied access on protected block_device %s -> (%d, %d)\n", path, MAJOR(bdev), MINOR(bdev));
+                                path = kstrdup(path, GFP_ATOMIC);
+				//log_message(LOG_INFO, "Denied access on protected block_device %s -> (%d, %d)\n", path, MAJOR(bdev), MINOR(bdev));
+                                submit_intrusion_log_work("DENIED B_DEV_WR", path, NULL);
                                 spin_unlock(&reference_monitor.lock);
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
@@ -604,7 +653,6 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
 		}
                 spin_unlock(&reference_monitor.lock);
 	}
-
 
         return 0; 
 }
@@ -1144,7 +1192,7 @@ static void print_current_refmon_state(void){
                         if (IS_ERR(pathname)) {
                                 log_message(LOG_ERR, "Error converting path to string\n");
                         } else {
-                                log_message(LOG_INFO, "Protected path: %s [TTL: %d min]\n", pathname, (entry->deadline_TTL-refmon_time));
+                                log_message(LOG_INFO, "Protected path: %s [TTL: %d min] [bdev: (%d,%d)]\n", pathname, (entry->deadline_TTL-refmon_time), MAJOR(entry->fs_bdev), MINOR(entry->fs_bdev));
                         }
                         free_page((unsigned long)buf);
                 }
@@ -1288,7 +1336,14 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                                                 the_refmon_path->deadline_TTL = refmon_time + path_ttl;
                                         }
                                         list_add(&the_refmon_path->list, &reference_monitor.protected_paths);
-                                        log_message(LOG_INFO, "Starting to monitor new path '%s' for %d minutes\n", kernel_path, path_ttl);
+                                        if(path_ttl == -1){
+                                                log_message(LOG_INFO, "Starting to monitor new path '%s' until reference monitor is up\n", kernel_path, path_ttl);
+
+                                        }else if (path_ttl == 1){
+                                                log_message(LOG_INFO, "Starting to monitor new path '%s' for %d minute\n", kernel_path, path_ttl);
+                                        } else{
+                                                log_message(LOG_INFO, "Starting to monitor new path '%s' for %d minutes\n", kernel_path, path_ttl);
+                                        }
                                         ret = 0;
                                         goto exit;
                                 case 1:

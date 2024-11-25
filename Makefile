@@ -102,8 +102,16 @@ define clean_refmon_tool
 	@echo "Cleaning refmon_tool..." && rm refmon_tool_run && echo "refmon_tool cleaning successful!";
 endef
 
-up: all mount tool
-	@echo "REFMON IS UP.\n\n You can now run "sudo ./refmon_tool_run" to easily interact with it.\n NB:] beware of using sudo because EUID 0 is required.\n\n"
+define compile_refmon_test
+	@echo "Compiling refmon_test..." && cd refmon_test && echo "//syscall number for sys_refmon_manage\n#define __NR_sys_refmon_manage $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_manage)\n//syscall number for sys_refmon_reconfigure\n#define __NR_sys_refmon_reconfigure $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_reconfigure)\n" > syscall_nums.h && gcc refmon_test.c -o ../refmon_test_run && echo "refmon_test compilation successful!";
+endef
+
+define clean_refmon_test
+	@echo "Cleaning refmon_test..." && rm refmon_test_run && echo "refmon_test cleaning successful!";
+endef
+
+up: all mount tool test
+	@echo "REFMON IS UP.\n\n You can now run 'sudo ./refmon_tool_run' to access the CLI for RefMon.\n You can also run 'sudo ./refmon_test_run' to run tests and compute overhead.\n\nNB:] beware of using sudo because EUID 0 is required.\n\n"
 
 down: unmount clean
 	@echo "REFMON IS DOWN.\n\n"
@@ -118,11 +126,15 @@ all:
 tool:
 	$(call compile_refmon_tool)
 
+test:
+	$(call compile_refmon_test)
+
 clean:
 	$(call clean_module,the_usctm,usctm)
 	$(call clean_module,.,reference-monitor)
 	$(call clean_singlefilefs)
 	$(call clean_refmon_tool)
+	$(call clean_refmon_test)
 
 mount:
 	$(call insmod_module,usctm)

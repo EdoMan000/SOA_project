@@ -19,6 +19,8 @@
         "cacheflush.h": "c",
         "vmalloc.h": "c",
         "workqueue.h": "c",
-        "early_lookup.h": "c"
+        "early_lookup.h": "c",
+        "blkdev.h": "c",
+        "syscalls.h": "c"
     }
 }
