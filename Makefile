@@ -103,15 +103,15 @@ define clean_refmon_tool
 endef
 
 define compile_refmon_test
-	@echo "Compiling refmon_test..." && cd refmon_test && echo "//syscall number for sys_refmon_manage\n#define __NR_sys_refmon_manage $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_manage)\n//syscall number for sys_refmon_reconfigure\n#define __NR_sys_refmon_reconfigure $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_reconfigure)\n" > syscall_nums.h && gcc refmon_test.c -o ../refmon_test_run && echo "refmon_test compilation successful!";
+	@echo "Compiling refmon_test..." && cd refmon_test && echo "//syscall number for sys_refmon_manage\n#define __NR_sys_refmon_manage $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_manage)\n//syscall number for sys_refmon_reconfigure\n#define __NR_sys_refmon_reconfigure $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_reconfigure)\n" > syscall_nums.h && gcc refmon_test.c -o ../refmon_test_run && gcc baseline_test.c -o ../baseline_test_run && echo "refmon_test compilation successful!";
 endef
 
 define clean_refmon_test
-	@echo "Cleaning refmon_test..." && rm refmon_test_run && echo "refmon_test cleaning successful!";
+	@echo "Cleaning refmon_test..." && rm refmon_test_run && rm -rf refmon_test/protected && rm -rf refmon_test/tests && rm -rf refmon_test/graphs && rm -rf refmon_test/results  && echo "refmon_test cleaning successful!";
 endef
 
 up: all mount tool test
-	@echo "REFMON IS UP.\n\n You can now run 'sudo ./refmon_tool_run' to access the CLI for RefMon.\n You can also run 'sudo ./refmon_test_run' to run tests and compute overhead.\n\nNB:] beware of using sudo because EUID 0 is required.\n\n"
+	@echo "REFMON IS UP.\n\n You can now run 'sudo ./refmon_tool_run' to access the CLI for RefMon.\n You can also run 'python3 ./test_refmon.py' to access the CLI for RefMon tests.\n\nNB:] beware of using sudo because EUID 0 is required.\n\n"
 
 down: unmount clean
 	@echo "REFMON IS DOWN.\n\n"

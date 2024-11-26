@@ -7,6 +7,8 @@ Si può fare a fs montato stabilmente (aprendo e chiudendo lo stesso set di file
 
 test sulle varie operazioni intercettate al variare della grandezza del set (0(baseline), 10 / 100 / 1000 elementi) -> vedere come cresce il delay (se è eccessivo valutare di cambiare la lista con un hash-table)
 
+ADDITIONAL TEST: momento in cui faccio una open ho bisogno di una sessione. Voglio vedere cosa succede se cerco di aprire una directory invece di file regolari. in modalità update non posso -> CREATE di un file nella directory protetta
+
 - **USE CASE nell'articolo** -> far vedere come sia semplice gestire uno specifico USE CASE (backups... / VMs...)
 
 - **Resolve full pathname until root in log** (see dpath usage when i print list of protected paths -> that actually solves it !!!! OKKKK, try to find similar way for other probes that use dentry_path_raw)

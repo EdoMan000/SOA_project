@@ -92,15 +92,15 @@ int main(int argc, char** argv) {
 
     while (1) {
         system("clear"); 
+        printf("\n");
+        printf(YELLOW " ██████╗ ███████╗███████╗███╗   ███╗ ██████╗ ███╗   ██╗    ████████╗ ██████╗  ██████╗ ██╗     \n" RESET);
+		printf(YELLOW " ██╔══██╗██╔════╝██╔════╝████╗ ████║██╔═══██╗████╗  ██║    ╚══██╔══╝██╔═══██╗██╔═══██╗██║     \n" RESET);
+		printf(YELLOW " ██████╔╝█████╗  █████╗  ██╔████╔██║██║   ██║██╔██╗ ██║       ██║   ██║   ██║██║   ██║██║     \n" RESET);
+		printf(YELLOW " ██╔══██╗██╔══╝  ██╔══╝  ██║╚██╔╝██║██║   ██║██║╚██╗██║       ██║   ██║   ██║██║   ██║██║     \n" RESET);
+		printf(YELLOW " ██║  ██║███████╗██║     ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║       ██║   ╚██████╔╝╚██████╔╝███████╗\n" RESET);
+		printf(YELLOW " ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝       ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝\n\n" RESET);
 
-        printf(YELLOW "██████╗ ███████╗███████╗███╗   ███╗ ██████╗ ███╗   ██╗    ████████╗ ██████╗  ██████╗ ██╗     \n" RESET);
-		printf(YELLOW "██╔══██╗██╔════╝██╔════╝████╗ ████║██╔═══██╗████╗  ██║    ╚══██╔══╝██╔═══██╗██╔═══██╗██║     \n" RESET);
-		printf(YELLOW "██████╔╝█████╗  █████╗  ██╔████╔██║██║   ██║██╔██╗ ██║       ██║   ██║   ██║██║   ██║██║     \n" RESET);
-		printf(YELLOW "██╔══██╗██╔══╝  ██╔══╝  ██║╚██╔╝██║██║   ██║██║╚██╗██║       ██║   ██║   ██║██║   ██║██║     \n" RESET);
-		printf(YELLOW "██║  ██║███████╗██║     ██║ ╚═╝ ██║╚██████╔╝██║ ╚████║       ██║   ╚██████╔╝╚██████╔╝███████╗\n" RESET);
-		printf(YELLOW "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝       ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝\n\n" RESET);
-
-		printf(YELLOW "       D E V E L O P E D    B Y     Edoardo Manenti [ 0333574 | manenti000@gmail.com ]       \n" RESET);
+		printf(YELLOW "        D E V E L O P E D    B Y     Edoardo Manenti [ 0333574 | manenti000@gmail.com ]       \n" RESET);
 		printf("\n\n");
 
 
@@ -166,9 +166,8 @@ int main(int argc, char** argv) {
                     }
                 }
                 result = invoke_refmon_reconfigure(action_t, password, path, ttl);
-                break;
             case 3:
-                retrieve_shell_cmd_output("dmesg | tail -n 10", "Failed to retrieve output. (Check if running tool with EUID set to 0)", "'sudo dmesg' tail output");
+                retrieve_shell_cmd_output("dmesg | tail -n 10", "Failed to retrieve output. (Dmesg empty or check if running tool with EUID set to 0)", "'sudo dmesg' tail output");
                 result = 12345;
                 break;
             case 4:

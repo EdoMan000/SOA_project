@@ -2,7 +2,7 @@
  * @file refmon_test.c 
  * 
  * @brief A user-space test to compute overhead 
- *        introduced by refmon security operations
+ *        introduced by refmon security operations, using uint64_t.
  * 
  * @author Edoardo Manenti
  *
@@ -20,11 +20,13 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include "syscall_nums.h"
+#include <stdint.h> // For uint64_t
 
 typedef enum {
     REFMON_ACTION_PROTECT,
     REFMON_ACTION_UNPROTECT
 } refmon_action_t;
+
 
 enum refmon_ops {
     REFMON_SET_OFF = 0,
@@ -35,8 +37,8 @@ enum refmon_ops {
 };
 
 #define PATH_TTL -1 // Infinite TTL for protection
-#define M 100 // Number of test files for read/write operations
-#define NUM_RUNS 10 // Number of runs to average the times
+#define M 1         // Number of test files for read/write operations
+#define N_RUNS 1000 // Number of test runs per operation
 #define MAX_PASSW_LEN 32
 #define PATH_MAX 4096
 
@@ -46,17 +48,22 @@ static int invoke_refmon_manage(int action) {
     return syscall(__NR_sys_refmon_manage, action);
 }
 
-static int invoke_refmon_reconfigure(refmon_action_t action, const char* password, const char* path, int ttl) {
+static int invoke_refmon_reconfigure(int action, const char* password, const char* path, int ttl) {
     return syscall(__NR_sys_refmon_reconfigure, action, password, path, ttl);
 }
 
+// Function to read TSC (Time Stamp Counter)
+static inline uint64_t rdtsc() {
+    unsigned int lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
 // Function to create a file with some content
-int create_file(const char *filename)
-{
+int create_file(const char *filename) {
     if (verbose) printf("Creating file: %s\n", filename);
-    int fd = open(filename, O_CREAT | O_WRONLY, 0644);
-    if (fd < 0)
-    {
+    int fd = open(filename, O_CREAT | O_WRONLY, 7777);
+    if (fd < 0) {
         perror("open");
         return -1;
     }
@@ -66,62 +73,52 @@ int create_file(const char *filename)
     return 0;
 }
 
-// Function to read a file
-int read_file(const char *filename)
-{
-    if (verbose) printf("Reading file: %s\n", filename);
+// Function to measure opening a file in read mode
+uint64_t single_open_read(const char *filename) {
+    uint64_t start_cycles, end_cycles;
+
+    if (verbose) printf("Opening file for reading: %s\n", filename);
+
+    start_cycles = rdtsc();
     int fd = open(filename, O_RDONLY);
-    if (fd < 0)
-    {
-        perror("open");
-        return -1;
+    end_cycles = rdtsc();
+
+    if (fd < 0) {
+        perror("open for reading failed");
+        return (uint64_t)-1;
     }
-    char buffer[1024];
-    read(fd, buffer, sizeof(buffer));
+
     close(fd);
-    return 0;
+    return end_cycles - start_cycles;
 }
 
-// Function to write to a file
-int write_file(const char *filename)
-{
-    if (verbose) printf("Writing to file: %s\n", filename);
-    int fd = open(filename, O_WRONLY | O_APPEND);
-    if (fd < 0)
-    {
-        perror("open");
-        return -1;
-    }
-    const char *content = "Appending some content.\n";
-    write(fd, content, strlen(content));
-    close(fd);
-    return 0;
-}
+// Function to measure opening a file in write mode
+uint64_t single_open_write(const char *filename) {
+    uint64_t start_cycles, end_cycles;
 
-// Function to pre-open a file to load it into cache
-void pre_open_file(const char *filename)
-{
-    if (verbose) printf("Pre-loading file into cache: %s\n", filename);
-    int fd = open(filename, O_RDONLY);
-    if (fd >= 0)
-    {
-        char buffer[1024];
-        read(fd, buffer, sizeof(buffer));
-        close(fd);
+    if (verbose) printf("Opening file for writing: %s\n", filename);
+
+    start_cycles = rdtsc();
+    int fd = open(filename, O_WRONLY);
+    end_cycles = rdtsc();
+
+    if (fd < 0) {
+        perror("open for writing failed");
+        return (uint64_t)-1;
     }
+
+    close(fd);
+    return end_cycles - start_cycles;
 }
 
 // Function to delete all files in a directory and the directory itself
-void cleanup_test_directory(const char *dirpath)
-{
+void cleanup_test_directory(const char *dirpath) {
     if (verbose) printf("Cleaning up test directory: %s\n", dirpath);
     DIR *dir = opendir(dirpath);
-    if (dir)
-    {
+    if (dir) {
         struct dirent *entry;
         char filepath[512];
-        while ((entry = readdir(dir)) != NULL)
-        {
+        while ((entry = readdir(dir)) != NULL) {
             if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
                 continue;
             snprintf(filepath, sizeof(filepath), "%s/%s", dirpath, entry->d_name);
@@ -134,8 +131,7 @@ void cleanup_test_directory(const char *dirpath)
 }
 
 // Main test function
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     // Parse command-line arguments
     int opt;
     while ((opt = getopt(argc, argv, "v")) != -1) {
@@ -149,31 +145,33 @@ int main(int argc, char *argv[])
         }
     }
 
-    int N_values[] = {0, 10, 100, 1000}; // Varying sizes of the protected set
-    int N_tests = sizeof(N_values)/sizeof(N_values[0]);
+    int N_values[] = {0, 10, 100, 1000};
+    int N_tests = sizeof(N_values) / sizeof(N_values[0]);
     char filename[PATH_MAX];
-    int i, j, k;
-    struct timespec start_time, end_time;
-    double elapsed_time;
     char password[MAX_PASSW_LEN + 1];
     char *test_dir = "./refmon_test/tests";
+    char *protected_dir = "./refmon_test/protected";
+    char *results_dir = "./refmon_test/results";
     struct stat st = {0};
 
-    double read_times[N_tests];
-    double write_times[N_tests];
-    double read_baseline = 0.0;
-    double write_baseline = 0.0;
+    uint64_t read_time, write_time;
+    uint64_t total_read_time, total_write_time;
+    int valid_read_count, valid_write_count;
+
+    uint64_t read_times[N_tests];
+    uint64_t write_times[N_tests];
+    memset(read_times, 0, sizeof(read_times));
+    memset(write_times, 0, sizeof(write_times));
+
     FILE *csv_file;
 
     // Read password from 'the_secret' file
     FILE *pass_file = fopen("the_secret", "r");
-    if (!pass_file)
-    {
+    if (!pass_file) {
         perror("fopen the_secret");
         exit(EXIT_FAILURE);
     }
-    if (!fgets(password, sizeof(password), pass_file))
-    {
+    if (!fgets(password, sizeof(password), pass_file)) {
         perror("fgets");
         fclose(pass_file);
         exit(EXIT_FAILURE);
@@ -183,118 +181,83 @@ int main(int argc, char *argv[])
         password[len - 1] = '\0';
     fclose(pass_file);
 
-    invoke_refmon_manage(REFMON_SET_REC_ON);
-    if (stat(test_dir, &st) == -1 && mkdir(test_dir, 0700) != 0)
-    {
+    // Prepare directories
+    if (stat(test_dir, &st) == -1 && mkdir(test_dir, 7777) != 0) {
         perror("mkdir test_dir");
         exit(EXIT_FAILURE);
     }
+    if (stat(protected_dir, &st) == -1 && mkdir(protected_dir, 7777) != 0) {
+        perror("mkdir protected_dir");
+        exit(EXIT_FAILURE);
+    }
+    if (stat(results_dir, &st) == -1 && mkdir(results_dir, 7777) != 0) {
+        perror("mkdir results_dir");
+        exit(EXIT_FAILURE);
+    }
 
-    for (i = 0; i < M; i++)
-    {
+    // Create test files
+    for (int i = 0; i < M; i++) {
         snprintf(filename, sizeof(filename), "%s/test_file_%d", test_dir, i);
         create_file(filename);
     }
 
-    csv_file = fopen("results.csv", "w");
-    if (!csv_file)
-    {
+    // Open CSV file for results
+    snprintf(filename, sizeof(filename), "%s/results.csv", results_dir);
+    csv_file = fopen(filename, "w");
+    if (!csv_file) {
         perror("fopen results.csv");
         exit(EXIT_FAILURE);
     }
-    fprintf(csv_file, "N,Read Time (ns),Read Overhead (%%),Write Time (ns),Write Overhead (%%)\n");
+    fprintf(csv_file, "N,Read Time (cycles),Write Time (cycles)\n");
 
-    for (j = 0; j < N_tests; j++)
-    {
+    // Main test loop
+    invoke_refmon_manage(REFMON_SET_REC_ON);
+    for (int j = 0; j < N_tests; j++) {
         int N = N_values[j];
         if (verbose) printf("\nTesting with N = %d protected files\n", N);
 
-        if (N > 0)
-        {
-            for (i = 0; i < N; i++)
-            {
-                snprintf(filename, sizeof(filename), "%s/protected_file_%d", test_dir, i);
-                create_file(filename);
-                if (verbose) printf("Protecting file: %s\n", filename);
-                if (invoke_refmon_reconfigure(REFMON_ACTION_PROTECT, password, filename, PATH_TTL) < 0)
-                {
-                    fprintf(stderr, "Failed to protect file: %s\n", filename);
-                }
-            }
-        }
+        total_read_time = total_write_time = 0;
+        valid_read_count = valid_write_count = 0;
 
-        // Measure single operation times
-        double total_read_time = 0.0;
-        double total_write_time = 0.0;
-
-        for (k = 0; k < NUM_RUNS; k++)
-        {
-            for (i = 0; i < M; i++)
-            {
+        for (int k = 0; k < N_RUNS; k++) {
+            for (int i = 0; i < M; i++) {
                 snprintf(filename, sizeof(filename), "%s/test_file_%d", test_dir, i);
 
-                // Time for single read operation
-                pre_open_file(filename);
-                clock_gettime(CLOCK_MONOTONIC_RAW, &start_time);
-                read_file(filename);
-                clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
-                elapsed_time = (end_time.tv_sec - start_time.tv_sec) * 1e9  +
-                               (end_time.tv_nsec - start_time.tv_nsec);
-                total_read_time += elapsed_time;
-                //if(i==0 && k ==0) printf("\n[%d] READ TIME: %f\n",j,elapsed_time);
+                // Measure read time
+                read_time = single_open_read(filename);
+                if (read_time != (uint64_t)-1) {
+                    total_read_time += read_time;
+                    valid_read_count++;
+                }
 
-                // Time for single write operation
-                pre_open_file(filename);
-                clock_gettime(CLOCK_MONOTONIC_RAW, &start_time);
-                write_file(filename);
-                clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
-                elapsed_time = (end_time.tv_sec - start_time.tv_sec) * 1e9  +
-                               (end_time.tv_nsec - start_time.tv_nsec);
-                total_write_time += elapsed_time;
-                //if(i==0 && k ==0) printf("[%d] WRITE TIME: %f\n",j,elapsed_time);
+                // Measure write time
+                write_time = single_open_write(filename);
+                if (write_time != (uint64_t)-1) {
+                    total_write_time += write_time;
+                    valid_write_count++;
+                }
             }
         }
 
         // Compute averages
-        read_times[j] = total_read_time / (NUM_RUNS * M);
-        write_times[j] = total_write_time / (NUM_RUNS * M);
+        read_times[j] = valid_read_count > 0 ? total_read_time / valid_read_count : 0;
+        write_times[j] = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
 
-        if (N == 0) {
-            read_baseline = read_times[j];
-            write_baseline = write_times[j];
-        }
+        fprintf(csv_file, "%d,%lu,%lu\n", N, read_times[j], write_times[j]);
 
-        double read_overhead = (read_times[j] - read_baseline) / read_baseline * 100.0;
-        if (read_overhead < 0)
-        {
-            read_overhead = 0;
-        }
-        double write_overhead = (write_times[j] - write_baseline) / write_baseline * 100.0;
-        if (write_overhead < 0)
-        {
-            write_overhead = 0;
-        }
-
-        fprintf(csv_file, "%d,%f,%f,%f,%f\n", N, read_times[j], read_overhead, write_times[j], write_overhead);
-
-        if (N > 0)
-        {
-            for (i = 0; i < N; i++)
-            {
-                snprintf(filename, sizeof(filename), "%s/protected_file_%d", test_dir, i);
-                if (verbose) printf("Unprotecting file: %s\n", filename);
-                if (invoke_refmon_reconfigure(REFMON_ACTION_UNPROTECT, password, filename, PATH_TTL) > 0)
-                {
-                    fprintf(stderr, "Failed to unprotect file: %s\n", filename);
-                }
-                remove(filename);
-            }
+        if (verbose) {
+            printf("N = %d: Average Read Time = %lu cycles, Average Write Time = %lu cycles\n",
+                   N, read_times[j], write_times[j]);
         }
     }
 
     fclose(csv_file);
+
+    // Cleanup
     cleanup_test_directory(test_dir);
+    cleanup_test_directory(protected_dir);
     invoke_refmon_manage(REFMON_SET_OFF);
-    printf("Results saved to results.csv\n");
+
+    if (verbose) printf("\nResults saved to %s/results.csv\n", results_dir);
     return 0;
 }
