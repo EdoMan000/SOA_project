@@ -145,7 +145,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    int N_values[] = {0, 10, 100, 1000};
+    int N_values[] = {0, 10, 100, 200, 300, 400, 500};
     int N_tests = sizeof(N_values) / sizeof(N_values[0]);
     char filename[PATH_MAX];
     char password[MAX_PASSW_LEN + 1];
@@ -153,6 +153,7 @@ int main(int argc, char *argv[]) {
     char *protected_dir = "./refmon_test/protected";
     char *results_dir = "./refmon_test/results";
     struct stat st = {0};
+    int N, i, j, k;
 
     uint64_t read_time, write_time;
     uint64_t total_read_time, total_write_time;
@@ -212,15 +213,29 @@ int main(int argc, char *argv[]) {
 
     // Main test loop
     invoke_refmon_manage(REFMON_SET_REC_ON);
-    for (int j = 0; j < N_tests; j++) {
-        int N = N_values[j];
+    for (j = 0; j < N_tests; j++) {
+        N = N_values[j];
         if (verbose) printf("\nTesting with N = %d protected files\n", N);
+
+        if (N > 0)
+        {
+            for (i = 0; i < N; i++)
+            {
+                snprintf(filename, sizeof(filename), "%s/protected_file_%d", test_dir, i);
+                create_file(filename);
+                if (verbose) printf("Protecting file: %s\n", filename);
+                if (invoke_refmon_reconfigure(REFMON_ACTION_PROTECT, password, filename, PATH_TTL) < 0)
+                {
+                    fprintf(stderr, "Failed to protect file: %s\n", filename);
+                }
+            }
+        }
 
         total_read_time = total_write_time = 0;
         valid_read_count = valid_write_count = 0;
 
-        for (int k = 0; k < N_RUNS; k++) {
-            for (int i = 0; i < M; i++) {
+        for (k = 0; k < N_RUNS; k++) {
+            for (i = 0; i < M; i++) {
                 snprintf(filename, sizeof(filename), "%s/test_file_%d", test_dir, i);
 
                 // Measure read time
@@ -244,6 +259,20 @@ int main(int argc, char *argv[]) {
         write_times[j] = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
 
         fprintf(csv_file, "%d,%lu,%lu\n", N, read_times[j], write_times[j]);
+
+        if (N > 0)
+        {
+            for (i = 0; i < N; i++)
+            {
+                snprintf(filename, sizeof(filename), "%s/protected_file_%d", test_dir, i);
+                if (verbose) printf("Unprotecting file: %s\n", filename);
+                if (invoke_refmon_reconfigure(REFMON_ACTION_UNPROTECT, password, filename, PATH_TTL) > 0)
+                {
+                    fprintf(stderr, "Failed to unprotect file: %s\n", filename);
+                }
+                remove(filename);
+            }
+        }
 
         if (verbose) {
             printf("N = %d: Average Read Time = %lu cycles, Average Write Time = %lu cycles\n",

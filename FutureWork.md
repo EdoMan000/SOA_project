@@ -9,6 +9,10 @@ test sulle varie operazioni intercettate al variare della grandezza del set (0(b
 
 ADDITIONAL TEST: momento in cui faccio una open ho bisogno di una sessione. Voglio vedere cosa succede se cerco di aprire una directory invece di file regolari. in modalità update non posso -> CREATE di un file nella directory protetta
 
+0) 
+1) struttura più performante (es: hash tables)
+2) test di concorrenza se con i lock ok. (fare le stesse operazioni scalando i thread 1/2/4/8)
+
 - **USE CASE nell'articolo** -> far vedere come sia semplice gestire uno specifico USE CASE (backups... / VMs...)
 
 - **Resolve full pathname until root in log** (see dpath usage when i print list of protected paths -> that actually solves it !!!! OKKKK, try to find similar way for other probes that use dentry_path_raw)

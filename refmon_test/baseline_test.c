@@ -2,7 +2,7 @@
  * @file baseline_test.c
  *
  * @brief A minimal test to compute baseline overhead
- *        for file operations without RefMon module involvement.
+ *        for file opening(read/write) without RefMon module involvement.
  *
  * @author Edoardo Manenti
  *
@@ -11,11 +11,16 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <fcntl.h>
 #include <string.h>
-#include <stdint.h> // For uint64_t
-#include <unistd.h>
+#include <time.h>
+#include <errno.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <stdint.h> // For uint64_t
 
 #define PATH_MAX 4096
 #define N_RUNS 1000 // Number of test runs for averaging
@@ -72,6 +77,23 @@ uint64_t single_open_write(const char *filename) {
     close(fd);
 
     return end_cycles - start_cycles;
+}
+
+// Function to delete all files in a directory and the directory itself
+void cleanup_directory(const char *dirpath) {
+    DIR *dir = opendir(dirpath);
+    if (dir) {
+        struct dirent *entry;
+        char filepath[512];
+        while ((entry = readdir(dir)) != NULL) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+                continue;
+            snprintf(filepath, sizeof(filepath), "%s/%s", dirpath, entry->d_name);
+            remove(filepath);
+        }
+        closedir(dir);
+    }
+    rmdir(dirpath);
 }
 
 // Main test function
@@ -153,6 +175,7 @@ int main() {
 
     // Clean up
     remove(test_file);
+    cleanup_directory(test_dir);
     printf("Baseline results saved to %s\n", baseline_csv);
 
     return EXIT_SUCCESS;

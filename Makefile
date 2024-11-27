@@ -107,7 +107,7 @@ define compile_refmon_test
 endef
 
 define clean_refmon_test
-	@echo "Cleaning refmon_test..." && rm refmon_test_run && rm -rf refmon_test/protected && rm -rf refmon_test/tests && rm -rf refmon_test/graphs && rm -rf refmon_test/results  && echo "refmon_test cleaning successful!";
+	@echo "Cleaning refmon_test..." && rm refmon_test_run && sudo rm -rf refmon_test/protected && sudo rm -rf refmon_test/tests && sudo rm -rf refmon_test/graphs && sudo rm -rf refmon_test/results  && echo "refmon_test cleaning successful!";
 endef
 
 up: all mount tool test

@@ -357,23 +357,14 @@ cleanup:
  *         or NULL on error. The caller is responsible for freeing this memory with kfree.
  */
 char *get_current_exe_path(void) {
-        char *buf, *pathname = NULL;
-
-        buf = (char *)__get_free_page(GFP_KERNEL);
-        if (!buf) {
-                log_message(LOG_ERR, "get_current_exe_path: Failed to allocate memory for path buffer to submit deferred work\n");
-                return NULL;
-        }
-
+        char buf[PATH_MAX];
+        char *pathname = NULL;
         pathname = d_path(&current->mm->exe_file->f_path, buf, PAGE_SIZE);
         if (IS_ERR(pathname)) {
                 pr_err("get_current_exe_path: Error converting path to string to submit deferred work\n");
-                free_page((unsigned long)buf);
                 return NULL;
         }
         pathname = kstrdup(pathname, GFP_KERNEL);
-
-        free_page((unsigned long)buf);
 
         return pathname; 
 }
@@ -603,7 +594,7 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
         struct krp_security_file_open_data *data = (struct krp_security_file_open_data *)ri->data;
         struct file* file = data->file;
 
-        char* buffer = kzalloc(4096, GFP_KERNEL);
+        char buffer[PATH_MAX];
         char* path;
         path = d_path(&file->f_path, buffer, 4096);
 
@@ -1160,7 +1151,7 @@ static void update_state(state_t new_state, int reconf){
  *      the list of protected paths, logging each.
  */
 static void print_current_refmon_state(void){
-        char *buf;
+        char buf[PATH_MAX];
         char *pathname;
         struct path path;
         if (the_refmon_reconf != 1) {
@@ -1183,18 +1174,17 @@ static void print_current_refmon_state(void){
                 refmon_path *entry;
                 list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
                         path = entry->actual_path;
-                        buf = (char *)__get_free_page(GFP_KERNEL);
-                        if (!buf) {
-                                log_message(LOG_ERR, "Failed to allocate memory for path buffer\n");
-                                break;
-                        }
                         pathname = d_path(&path, buf, PAGE_SIZE);
                         if (IS_ERR(pathname)) {
                                 log_message(LOG_ERR, "Error converting path to string\n");
                         } else {
-                                log_message(LOG_INFO, "Protected path: %s [TTL: %d min] [bdev: (%d,%d)]\n", pathname, (entry->deadline_TTL-refmon_time), MAJOR(entry->fs_bdev), MINOR(entry->fs_bdev));
+                                int ttl = (entry->deadline_TTL-refmon_time);
+                                if (ttl > 0){
+                                        log_message(LOG_INFO, "Protected path: %s [TTL: %d min] [bdev: (%d,%d)]\n", pathname, ttl, MAJOR(entry->fs_bdev), MINOR(entry->fs_bdev));
+                                }else{
+                                        log_message(LOG_INFO, "Protected path: %s [TTL: forever] [bdev: (%d,%d)]\n", pathname, MAJOR(entry->fs_bdev), MINOR(entry->fs_bdev));
+                                }
                         }
-                        free_page((unsigned long)buf);
                 }
         }
 
