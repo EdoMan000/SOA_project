@@ -62,7 +62,7 @@ static inline uint64_t rdtsc() {
 // Function to create a file with some content
 int create_file(const char *filename) {
     if (verbose) printf("Creating file: %s\n", filename);
-    int fd = open(filename, O_CREAT | O_WRONLY, 7777);
+    int fd = open(filename, O_CREAT | O_WRONLY, 0666);
     if (fd < 0) {
         perror("open");
         return -1;
@@ -71,6 +71,29 @@ int create_file(const char *filename) {
     write(fd, content, strlen(content));
     close(fd);
     return 0;
+}
+
+// Function to measure opening a file in write mode
+uint64_t single_file_create(const char *filename, int iteration) {
+    char new_file[PATH_MAX];
+    snprintf(new_file, sizeof(new_file), "%s_%d", filename, iteration);
+
+    uint64_t start_cycles, end_cycles;
+
+    if (verbose) printf("Opening file for creation: %s\n", new_file);
+
+    start_cycles = rdtsc();
+    int fd = open(new_file, O_CREAT | O_WRONLY, 0666);
+    end_cycles = rdtsc();
+
+    if (fd < 0) {
+        perror("file creation failed");
+        return (uint64_t)-1;
+    }
+
+    close(fd);
+    remove(new_file); // Clean up the file after timing
+    return end_cycles - start_cycles;
 }
 
 // Function to measure opening a file in read mode
@@ -155,14 +178,16 @@ int main(int argc, char *argv[]) {
     struct stat st = {0};
     int N, i, j, k;
 
-    uint64_t read_time, write_time;
-    uint64_t total_read_time, total_write_time;
-    int valid_read_count, valid_write_count;
+    uint64_t read_time, write_time, create_time;
+    uint64_t total_read_time, total_write_time, total_create_time;
+    int valid_read_count, valid_write_count, valid_create_count;
 
     uint64_t read_times[N_tests];
     uint64_t write_times[N_tests];
+    uint64_t create_times[N_tests];
     memset(read_times, 0, sizeof(read_times));
     memset(write_times, 0, sizeof(write_times));
+    memset(create_times, 0, sizeof(create_times));
 
     FILE *csv_file;
 
@@ -183,15 +208,15 @@ int main(int argc, char *argv[]) {
     fclose(pass_file);
 
     // Prepare directories
-    if (stat(test_dir, &st) == -1 && mkdir(test_dir, 7777) != 0) {
+    if (stat(test_dir, &st) == -1 && mkdir(test_dir, 0666) != 0) {
         perror("mkdir test_dir");
         exit(EXIT_FAILURE);
     }
-    if (stat(protected_dir, &st) == -1 && mkdir(protected_dir, 7777) != 0) {
+    if (stat(protected_dir, &st) == -1 && mkdir(protected_dir, 0666) != 0) {
         perror("mkdir protected_dir");
         exit(EXIT_FAILURE);
     }
-    if (stat(results_dir, &st) == -1 && mkdir(results_dir, 7777) != 0) {
+    if (stat(results_dir, &st) == -1 && mkdir(results_dir, 0666) != 0) {
         perror("mkdir results_dir");
         exit(EXIT_FAILURE);
     }
@@ -209,7 +234,7 @@ int main(int argc, char *argv[]) {
         perror("fopen results.csv");
         exit(EXIT_FAILURE);
     }
-    fprintf(csv_file, "N,Read Time (cycles),Write Time (cycles)\n");
+    fprintf(csv_file, "N,Read Time (cycles),Write Time (cycles),Create Time (cycles)\n");
 
     // Main test loop
     invoke_refmon_manage(REFMON_SET_REC_ON);
@@ -251,14 +276,22 @@ int main(int argc, char *argv[]) {
                     total_write_time += write_time;
                     valid_write_count++;
                 }
+
+                // Measure file creation time
+                create_time = single_file_create(filename, i);
+                if (create_time != (uint64_t)-1) {
+                    total_create_time += create_time;
+                    valid_create_count++;
+                }
             }
         }
 
         // Compute averages
         read_times[j] = valid_read_count > 0 ? total_read_time / valid_read_count : 0;
         write_times[j] = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
+        create_times[j] = valid_create_count > 0 ? total_create_time / valid_create_count : 0;
 
-        fprintf(csv_file, "%d,%lu,%lu\n", N, read_times[j], write_times[j]);
+        fprintf(csv_file, "%d,%lu,%lu,%lu\n", N, read_times[j], write_times[j], create_times[j]);
 
         if (N > 0)
         {
@@ -275,8 +308,8 @@ int main(int argc, char *argv[]) {
         }
 
         if (verbose) {
-            printf("N = %d: Average Read Time = %lu cycles, Average Write Time = %lu cycles\n",
-                   N, read_times[j], write_times[j]);
+            printf("N = %d: Average Read Time = %lu cycles, Average Write Time = %lu cycles, Average Create Time = %lu cycles\n",
+                   N, read_times[j], write_times[j], create_times[j]);
         }
     }
 

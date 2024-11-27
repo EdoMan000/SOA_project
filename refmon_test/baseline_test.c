@@ -2,7 +2,7 @@
  * @file baseline_test.c
  *
  * @brief A minimal test to compute baseline overhead
- *        for file opening(read/write) without RefMon module involvement.
+ *        for file operations (read, write, create) without RefMon module involvement.
  *
  * @author Edoardo Manenti
  *
@@ -34,7 +34,7 @@ static inline uint64_t rdtsc() {
 
 // Function to create a file with some content
 int create_file(const char *filename) {
-    int fd = open(filename, O_CREAT | O_WRONLY, 7777);
+    int fd = open(filename, O_CREAT | O_WRONLY, 0666);
     if (fd < 0) {
         perror("open");
         return -1;
@@ -43,6 +43,26 @@ int create_file(const char *filename) {
     write(fd, content, strlen(content));
     close(fd);
     return 0;
+}
+
+// Function to measure creation of a new file
+uint64_t single_file_create(const char *filename, int iteration) {
+    char new_file[PATH_MAX];
+    snprintf(new_file, sizeof(new_file), "%s_%d", filename, iteration);
+
+    uint64_t start_cycles, end_cycles;
+
+    start_cycles = rdtsc();
+    int fd = open(new_file, O_CREAT | O_WRONLY, 0666);
+    end_cycles = rdtsc();
+
+    if (fd < 0) {
+        perror("file creation failed");
+        return (uint64_t)-1;
+    }
+    close(fd);
+    remove(new_file); // Clean up the file after timing
+    return end_cycles - start_cycles;
 }
 
 // Function to measure opening a file in read mode
@@ -102,15 +122,15 @@ int main() {
     char results_dir[PATH_MAX] = "./refmon_test/results";
     char test_file[PATH_MAX];
     char baseline_csv[PATH_MAX];
-    uint64_t read_time, write_time;
-    uint64_t total_read_time = 0, total_write_time = 0;
-    int valid_read_count = 0, valid_write_count = 0;
+    uint64_t read_time, write_time, create_time;
+    uint64_t total_read_time = 0, total_write_time = 0, total_create_time = 0;
+    int valid_read_count = 0, valid_write_count = 0, valid_create_count = 0;
 
     struct stat st;
 
     // Ensure the test directory exists
     if (stat(test_dir, &st) == -1) {
-        if (mkdir(test_dir, 7777) != 0) {
+        if (mkdir(test_dir, 0666) != 0) {
             perror("mkdir test_dir");
             return EXIT_FAILURE;
         }
@@ -118,7 +138,7 @@ int main() {
 
     // Ensure the results directory exists
     if (stat(results_dir, &st) == -1) {
-        if (mkdir(results_dir, 7777) != 0) {
+        if (mkdir(results_dir, 0666) != 0) {
             perror("mkdir results_dir");
             return EXIT_FAILURE;
         }
@@ -136,7 +156,7 @@ int main() {
         return EXIT_FAILURE;
     }
 
-    // Perform multiple runs to gather average read and write times
+    // Perform multiple runs to gather average read, write, and create times
     for (int i = 0; i < N_RUNS; i++) {
         // Measure read time
         read_time = single_open_read(test_file);
@@ -151,11 +171,19 @@ int main() {
             total_write_time += write_time;
             valid_write_count++;
         }
+
+        // Measure file creation time
+        create_time = single_file_create(test_file, i);
+        if (create_time != (uint64_t)-1) {
+            total_create_time += create_time;
+            valid_create_count++;
+        }
     }
 
     // Calculate averages
     uint64_t average_read_time = valid_read_count > 0 ? total_read_time / valid_read_count : 0;
     uint64_t average_write_time = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
+    uint64_t average_create_time = valid_create_count > 0 ? total_create_time / valid_create_count : 0;
 
     // Prepare CSV file path
     if (snprintf(baseline_csv, sizeof(baseline_csv), "%s/baseline.csv", results_dir) >= sizeof(baseline_csv)) {
@@ -169,8 +197,8 @@ int main() {
         perror("fopen baseline.csv");
         return EXIT_FAILURE;
     }
-    fprintf(csv_file, "Read Time (cycles),Write Time (cycles)\n");
-    fprintf(csv_file, "%lu,%lu\n", average_read_time, average_write_time);
+    fprintf(csv_file, "Read Time (cycles),Write Time (cycles),Create Time (cycles)\n");
+    fprintf(csv_file, "%lu,%lu,%lu\n", average_read_time, average_write_time, average_create_time);
     fclose(csv_file);
 
     // Clean up

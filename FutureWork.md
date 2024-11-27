@@ -1,17 +1,8 @@
 # Future Work
 
-- **TEST PRESTAZIONI** -> overhead della protezione. 
-RW è regolare sul resto dei files, mentre sui file protetti avrei regolarmente la read ma non ha senso dato che non triggerano il controllo
-(read sui protetti / Read write sul resto dei file --> vedo solo overhead sui checks)
-Si può fare a fs montato stabilmente (aprendo e chiudendo lo stesso set di files -> se apro e richiudo il page cache mi carica tutto in memoria -> lightweight)
-
-test sulle varie operazioni intercettate al variare della grandezza del set (0(baseline), 10 / 100 / 1000 elementi) -> vedere come cresce il delay (se è eccessivo valutare di cambiare la lista con un hash-table)
-
-ADDITIONAL TEST: momento in cui faccio una open ho bisogno di una sessione. Voglio vedere cosa succede se cerco di aprire una directory invece di file regolari. in modalità update non posso -> CREATE di un file nella directory protetta
-
-0) 
+- **TEST PRESTAZIONI** 
 1) struttura più performante (es: hash tables)
-2) test di concorrenza se con i lock ok. (fare le stesse operazioni scalando i thread 1/2/4/8)
+2) USE READ/WRITE SPINLOCKS -> provare test di concorrenza (fare le stesse operazioni scalando i thread 1/2/4/8)
 
 - **USE CASE nell'articolo** -> far vedere come sia semplice gestire uno specifico USE CASE (backups... / VMs...)
 

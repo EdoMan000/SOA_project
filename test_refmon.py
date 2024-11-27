@@ -72,10 +72,10 @@ def run_tests():
             return
         if os.path.exists(baseline_csv):
             baseline_df = pd.read_csv(baseline_csv)
-            raw_data.append(["WITHOUT_MODULE", baseline_df.iloc[0]["Read Time (cycles)"], baseline_df.iloc[0]["Write Time (cycles)"]])
+            raw_data.append(["WITHOUT_MODULE", baseline_df.iloc[0]["Read Time (cycles)"], baseline_df.iloc[0]["Write Time (cycles)"], baseline_df.iloc[0]["Create Time (cycles)"]])
 
     # Save baseline results to rawResults.csv
-    raw_df = pd.DataFrame(raw_data, columns=["N", "Read Time (cycles)", "Write Time (cycles)"])
+    raw_df = pd.DataFrame(raw_data, columns=["N", "Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"])
     raw_df.to_csv(raw_results_file, index=False)
     console.print(f"[bold green]Baseline test results saved to {raw_results_file}[/bold green]")
 
@@ -94,10 +94,10 @@ def run_tests():
         if os.path.exists(test_results_csv):
             test_df = pd.read_csv(test_results_csv)
             for _, row in test_df.iterrows():
-                raw_data.append([row["N"], row["Read Time (cycles)"], row["Write Time (cycles)"]])
+                raw_data.append([row["N"], row["Read Time (cycles)"], row["Write Time (cycles)"], row["Create Time (cycles)"]])
 
     # Save updated results
-    raw_df = pd.DataFrame(raw_data, columns=["N", "Read Time (cycles)", "Write Time (cycles)"])
+    raw_df = pd.DataFrame(raw_data, columns=["N", "Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"])
     raw_df.to_csv(raw_results_file, index=False)
     console.print(f"[bold green]Test results saved to {raw_results_file}[/bold green]")
 
@@ -111,6 +111,8 @@ def generate_boxplots():
         console.print("[bold yellow]Raw results file missing. Perform tests first.[/bold yellow]")
         wait_for_keypress()
         return
+    
+    lower_bound_y, upper_bound_y, show_outliers = get_graph_preferences()
 
     try:
         raw_df = pd.read_csv(raw_results_file)
@@ -121,10 +123,13 @@ def generate_boxplots():
         os.makedirs(graphs_dir)
 
         # Determine global Y-axis limits
-        global_min = min(raw_df["Read Time (cycles)"].min(), raw_df["Write Time (cycles)"].min())
-        global_max = max(raw_df["Read Time (cycles)"].max(), raw_df["Write Time (cycles)"].max())
 
-        for col in ["Read Time (cycles)", "Write Time (cycles)"]:
+        # Determine global Y-axis limits if not specified
+        if lower_bound_y == -1 or upper_bound_y == -1:
+            lower_bound_y = min(raw_df["Read Time (cycles)"].min(), raw_df["Write Time (cycles)"].min(), raw_df["Create Time (cycles)"].min())
+            upper_bound_y = max(raw_df["Read Time (cycles)"].max(), raw_df["Write Time (cycles)"].max(), raw_df["Create Time (cycles)"].max())
+
+        for col in ["Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"]:
             plt.figure(figsize=(12, 8))
 
             # Extract unique values of N and group data
@@ -132,11 +137,11 @@ def generate_boxplots():
             grouped_data = [raw_df[raw_df["N"] == n][col] for n in unique_n]
 
             # Generate boxplot
-            plt.boxplot(grouped_data, showfliers=False, patch_artist=True, labels=unique_n)
+            plt.boxplot(grouped_data, showfliers=show_outliers, patch_artist=True, tick_labels=unique_n)
             plt.title(f"Boxplot of {col} by Number of Protected Files")
             plt.xlabel("Number of Protected Files")
             plt.ylabel(col)
-            plt.ylim(global_min, global_max)  # Set consistent Y-axis limits
+            plt.ylim(lower_bound_y, upper_bound_y)
             plt.grid(True)
 
             # Save the boxplot
@@ -151,6 +156,28 @@ def generate_boxplots():
     except Exception as e:
         console.print(f"[bold red]Failed to generate boxplots: {e}[/bold red]")
         wait_for_keypress()
+
+def get_graph_preferences():
+    """Prompt the user for custom Y-axis limits and outliers or default behavior."""
+    lower_bound = -1
+    upper_bound = -1
+    outliers = True
+    console.print("[bold yellow]Do you want to specify custom Y-axis limits for the graphs? (y/n)[/bold yellow]")
+    choice = console.input("[bold yellow]>>> [/bold yellow]").strip().lower()
+    if choice == "y":
+        try:
+            lower_bound = float(console.input("[bold yellow]Enter the lower bound for Y-axis: [/bold yellow]"))
+            upper_bound = float(console.input("[bold yellow]Enter the upper bound for Y-axis: [/bold yellow]"))
+        except ValueError:
+            console.print("[bold red]Invalid input! Using default Y-axis limits.[/bold red]")
+    console.print("[bold yellow]Do you want to show outliers in the graphs? (y/n)[/bold yellow]")
+    choice = console.input("[bold yellow]>>> [/bold yellow]").strip().lower()
+    if choice == "n":
+        try:
+            outliers = False
+        except ValueError:
+            console.print("[bold red]Invalid input! Showing outliers as default.[/bold red]")
+    return lower_bound, upper_bound, outliers
 
 def main_menu():
     try:
@@ -177,7 +204,7 @@ def main_menu():
             elif choice == "2":
                 generate_boxplots()
             elif choice == "3":
-                execute_command_ignore_error("make down", "make down before exiting")
+                #execute_command_ignore_error("make down", "make down before exiting")
                 console.print("[bold green]Exiting... Goodbye![/bold green]")
                 exit(0)
             else:
