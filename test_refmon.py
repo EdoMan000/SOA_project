@@ -1,10 +1,9 @@
 import os
-import shutil
 import subprocess
 import pandas as pd
 import matplotlib.pyplot as plt
 from rich.console import Console
-from rich.table import Table
+import shutil
 
 # Define directories and files
 base_dir = "./refmon_test"
@@ -31,12 +30,16 @@ def wait_for_keypress():
     console.print("[bold cyan]Press Enter to return to the menu...[/bold cyan]")
     input()
     clear_screen()
-    main_menu()
 
 
-def is_module_mounted():
-    """Check if the module is mounted by verifying the existence of refmon_test_run."""
-    return os.path.exists(test_executable)
+def execute_command_ignore_error(command, description):
+    """Execute a shell command and ignore errors."""
+    console.print(f"[bold green]Running: {description}[/bold green]")
+    try:
+        subprocess.run(command, shell=True, check=True)
+    except subprocess.CalledProcessError:
+        # Ignore errors and proceed
+        console.print(f"[bold yellow]{description} already in the desired state, continuing...[/bold yellow]")
 
 
 def execute_test(executable):
@@ -46,62 +49,48 @@ def execute_test(executable):
     except FileNotFoundError:
         console.print(f"[bold red]Error: {executable} not found. Ensure it is compiled and available.[/bold red]")
         wait_for_keypress()
+        return False
     except subprocess.CalledProcessError as e:
         console.print(f"[bold red]Test execution failed with error: {e}[/bold red]")
         wait_for_keypress()
+        return False
+    return True
 
 
-def run_baseline_tests():
-    """Run the baseline test 200 times before the module is mounted."""
-    if is_module_mounted():
-        console.print("[bold red]Cannot run baseline tests: the module is mounted.[/bold red]")
-        wait_for_keypress()
-        return
+def run_tests():
+    """Run the tests, generate graphs, and clean up."""
+    # Run `make down` before baseline tests
+    execute_command_ignore_error("make down", "make down")
 
-    console.print("[bold green]Starting 200 baseline runs...[/bold green]")
+    console.print("[bold green]Starting baseline tests...[/bold green]")
     raw_data = []
 
     # Execute baseline test 200 times
     for run in range(1, 201):
         console.print(f"Run {run}/200...")
-        execute_test(baseline_executable)
+        if not execute_test(baseline_executable):
+            return
         if os.path.exists(baseline_csv):
             baseline_df = pd.read_csv(baseline_csv)
             raw_data.append(["WITHOUT_MODULE", baseline_df.iloc[0]["Read Time (cycles)"], baseline_df.iloc[0]["Write Time (cycles)"]])
 
-    # Save results to rawResults.csv
+    # Save baseline results to rawResults.csv
     raw_df = pd.DataFrame(raw_data, columns=["N", "Read Time (cycles)", "Write Time (cycles)"])
     raw_df.to_csv(raw_results_file, index=False)
     console.print(f"[bold green]Baseline test results saved to {raw_results_file}[/bold green]")
 
+    # Run `make up` before RefMon tests
+    execute_command_ignore_error("make up", "make up")
 
-def perform_tests():
-    """Perform 200 runs for the refmon test."""
-    if not os.path.exists(raw_results_file):
-        console.print("[bold yellow]Baseline results missing. Run baseline tests first.[/bold yellow]")
-        wait_for_keypress()
-        return
-
-    if not is_module_mounted():
-        console.print("[bold red]Module not mounted. Please mount the module to proceed.[/bold red]")
-        console.print("[bold cyan]Press Enter once the module is mounted...[/bold cyan]")
-        input()
-        if not is_module_mounted():
-            console.print("[bold red]Module still not mounted. Aborting test execution.[/bold red]")
-            wait_for_keypress()
-            return
-
-    console.print("[bold green]Starting 200 refmon runs...[/bold green]")
-    raw_data = []
-
-    # Load existing data from rawResults.csv
+    console.print("[bold green]Starting RefMon tests...[/bold green]")
     if os.path.exists(raw_results_file):
         raw_data = pd.read_csv(raw_results_file).values.tolist()
 
-    # Execute refmon test 200 times
+    # Execute RefMon test 200 times
     for run in range(1, 201):
         console.print(f"Run {run}/200...")
-        execute_test(test_executable)
+        if not execute_test(test_executable):
+            return
         if os.path.exists(test_results_csv):
             test_df = pd.read_csv(test_results_csv)
             for _, row in test_df.iterrows():
@@ -112,9 +101,12 @@ def perform_tests():
     raw_df.to_csv(raw_results_file, index=False)
     console.print(f"[bold green]Test results saved to {raw_results_file}[/bold green]")
 
+    # Generate and show boxplots
+    generate_boxplots()
+
 
 def generate_boxplots():
-    """Generate boxplots directly from raw results without outliers."""
+    """Generate boxplots directly from raw results."""
     if not os.path.exists(raw_results_file):
         console.print("[bold yellow]Raw results file missing. Perform tests first.[/bold yellow]")
         wait_for_keypress()
@@ -140,13 +132,10 @@ def generate_boxplots():
             grouped_data = [raw_df[raw_df["N"] == n][col] for n in unique_n]
 
             # Generate boxplot
-            # plt.boxplot(grouped_data, showfliers=False, patch_artist=True, tick_labels=unique_n)
-            # plt.title(f"Boxplot of {col} by Number of protected files (Outliers Removed)")
-            plt.boxplot(grouped_data, showfliers=True, patch_artist=True, labels=unique_n)
-            plt.title(f"Boxplot of {col} by Number of protected files")
-            plt.xlabel("Number of protected files")
+            plt.boxplot(grouped_data, showfliers=False, patch_artist=True, labels=unique_n)
+            plt.title(f"Boxplot of {col} by Number of Protected Files")
+            plt.xlabel("Number of Protected Files")
             plt.ylabel(col)
-            # plt.ylim(1.5e3, 5e3)
             plt.ylim(global_min, global_max)  # Set consistent Y-axis limits
             plt.grid(True)
 
@@ -164,9 +153,10 @@ def generate_boxplots():
         wait_for_keypress()
 
 def main_menu():
-    while True:
-        clear_screen()
-        console.print("""
+    try:
+        while True:
+            clear_screen()
+            console.print("""
 [bold yellow]██████╗ ███████╗███████╗███╗   ███╗ ██████╗ ███╗   ██╗     ████████╗███████╗ ██████╗████████╗[/bold yellow]
 [bold yellow]██╔══██╗██╔════╝██╔════╝████╗ ████║██╔═══██╗████╗  ██║     ╚══██╔══╝██╔════╝██╔════╝╚══██╔══╝[/bold yellow]
 [bold yellow]██████╔╝█████╗  █████╗  ██╔████╔██║██║   ██║██╔██╗ ██║        ██║   █████╗  ███████╗   ██║   [/bold yellow]
@@ -175,26 +165,28 @@ def main_menu():
 [bold yellow]╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝        ╚═╝   ╚══════╝╚═════╝    ╚═╝   [/bold yellow]
                       
 [bold yellow]     D E V E L O P E D    B Y     Edoardo Manenti [ 0333574 | manenti000@gmail.com ]         [/bold yellow]
-""")
-        console.print("[bold yellow]Choose an option:[/bold yellow]")
-        console.print("[bold yellow][1] Run Baseline Tests[/bold yellow]")
-        console.print("[bold yellow][2] Perform RefMon Tests[/bold yellow]")
-        console.print("[bold yellow][3] Generate and Show Boxplots[/bold yellow]")
-        console.print("[bold yellow][4] Exit[/bold yellow]")
 
-        choice = console.input("\n[bold yellow]>>> [/bold yellow]")
-        if choice == "1":
-            run_baseline_tests()
-        elif choice == "2":
-            perform_tests()
-        elif choice == "3":
-            generate_boxplots()
-        elif choice == "4":
-            console.print("[bold green]Exiting... Goodbye![/bold green]")
-            exit(0)
-        else:
-            console.print("[bold red]Invalid choice. Please try again.[/bold red]")
-            wait_for_keypress()
+[bold yellow]Choose an option:[/bold yellow]
+[bold yellow][1] Run Tests[/bold yellow]
+[bold yellow][2] Show Plots[/bold yellow]
+[bold yellow][3] Exit[/bold yellow]
+""")
+            choice = console.input("\n[bold yellow]>>> [/bold yellow]")
+            if choice == "1":
+                run_tests()
+            elif choice == "2":
+                generate_boxplots()
+            elif choice == "3":
+                execute_command_ignore_error("make down", "make down before exiting")
+                console.print("[bold green]Exiting... Goodbye![/bold green]")
+                exit(0)
+            else:
+                console.print("[bold red]Invalid choice. Please try again.[/bold red]")
+                wait_for_keypress()
+    except KeyboardInterrupt:
+        execute_command_ignore_error("make down", "make down before exiting")
+        console.print("\n[bold green]Exiting... Goodbye![/bold green]")
+        exit(0)
 
 
 if __name__ == "__main__":
