@@ -103,7 +103,7 @@ define clean_refmon_tool
 endef
 
 define compile_refmon_test
-	@echo "Compiling refmon_test..." && cd refmon_test && echo "//syscall number for sys_refmon_manage\n#define __NR_sys_refmon_manage $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_manage)\n//syscall number for sys_refmon_reconfigure\n#define __NR_sys_refmon_reconfigure $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_reconfigure)\n" > syscall_nums.h && gcc refmon_test.c -o ../refmon_test_run && gcc baseline_test.c -o ../baseline_test_run && echo "refmon_test compilation successful!";
+	@echo "Compiling refmon_test..." && cd refmon_test && echo "//syscall number for sys_refmon_manage\n#define __NR_sys_refmon_manage $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_manage)\n//syscall number for sys_refmon_reconfigure\n#define __NR_sys_refmon_reconfigure $$(cat /sys/module/the_reference_monitor/parameters/__NR_sys_refmon_reconfigure)\n" > syscall_nums.h && gcc refmon_test.c -o ../refmon_test_run -lpthread && gcc baseline_test.c -o ../baseline_test_run -lpthread  && echo "refmon_test compilation successful!";
 endef
 
 define clean_refmon_test

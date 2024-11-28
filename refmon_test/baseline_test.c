@@ -2,9 +2,10 @@
  * @file baseline_test.c
  *
  * @brief A minimal test to compute baseline overhead
- *        for file operations (read, write, create) without RefMon module involvement.
+ *        for file operations (read, write, create) without RefMon module involvement,
+ *        using threads to perform concurrent operations.
  *
- * @author Edoardo Manenti
+ * @author
  *
  * @date November, 2024
  */
@@ -16,14 +17,28 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <string.h>
-#include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <stdint.h> // For uint64_t
+#include <pthread.h>
 
 #define PATH_MAX 4096
-#define N_RUNS 1000 // Number of test runs for averaging
+#define N_RUNS 1000 // Number of test runs per thread
+#define M 1         // Number of test files per thread
+
+typedef struct {
+    int thread_id;
+    int n_runs;
+    int m_files;
+    char test_dir[PATH_MAX];
+    uint64_t total_read_time;
+    uint64_t total_write_time;
+    uint64_t total_create_time;
+    int valid_read_count;
+    int valid_write_count;
+    int valid_create_count;
+} thread_data_t;
 
 // Function to read TSC (Time Stamp Counter)
 static inline uint64_t rdtsc() {
@@ -104,7 +119,7 @@ void cleanup_directory(const char *dirpath) {
     DIR *dir = opendir(dirpath);
     if (dir) {
         struct dirent *entry;
-        char filepath[512];
+        char filepath[PATH_MAX];
         while ((entry = readdir(dir)) != NULL) {
             if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
                 continue;
@@ -116,17 +131,53 @@ void cleanup_directory(const char *dirpath) {
     rmdir(dirpath);
 }
 
-// Main test function
+void* thread_test_function(void* arg) {
+    thread_data_t* data = (thread_data_t*)arg;
+    char filename[PATH_MAX];
+
+    for (int k = 0; k < data->n_runs; k++) {
+        for (int i = 0; i < data->m_files; i++) {
+
+            int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", data->test_dir, i, data->thread_id);
+            if (ret >= sizeof(filename)) {
+                fprintf(stderr, "Error: filename too long, truncated.\n");
+                pthread_exit(NULL);
+            }
+
+            // Measure read time
+            uint64_t read_time = single_open_read(filename);
+            if (read_time != (uint64_t)-1) {
+                data->total_read_time += read_time;
+                data->valid_read_count++;
+            }
+
+            // Measure write time
+            uint64_t write_time = single_open_write(filename);
+            if (write_time != (uint64_t)-1) {
+                data->total_write_time += write_time;
+                data->valid_write_count++;
+            }
+
+            // Measure file creation time
+            uint64_t create_time = single_file_create(filename, k);
+            if (create_time != (uint64_t)-1) {
+                data->total_create_time += create_time;
+                data->valid_create_count++;
+            }
+        }
+    }
+
+    pthread_exit(NULL);
+}
+
 int main() {
     char test_dir[PATH_MAX] = "./refmon_test/tests";
     char results_dir[PATH_MAX] = "./refmon_test/results";
-    char test_file[PATH_MAX];
     char baseline_csv[PATH_MAX];
-    uint64_t read_time, write_time, create_time;
-    uint64_t total_read_time = 0, total_write_time = 0, total_create_time = 0;
-    int valid_read_count = 0, valid_write_count = 0, valid_create_count = 0;
-
     struct stat st;
+
+    int thread_counts[] = {1, 2, 4, 8};
+    int T_tests = sizeof(thread_counts) / sizeof(thread_counts[0]);
 
     // Ensure the test directory exists
     if (stat(test_dir, &st) == -1) {
@@ -144,67 +195,113 @@ int main() {
         }
     }
 
-    // Create test file path
-    if (snprintf(test_file, sizeof(test_file), "%s/baseline_test_file", test_dir) >= sizeof(test_file)) {
-        fprintf(stderr, "Path truncation occurred for test_file\n");
-        return EXIT_FAILURE;
-    }
-
-    // Create a test file
-    if (create_file(test_file) < 0) {
-        fprintf(stderr, "Failed to create test file\n");
-        return EXIT_FAILURE;
-    }
-
-    // Perform multiple runs to gather average read, write, and create times
-    for (int i = 0; i < N_RUNS; i++) {
-        // Measure read time
-        read_time = single_open_read(test_file);
-        if (read_time != (uint64_t)-1) {
-            total_read_time += read_time;
-            valid_read_count++;
-        }
-
-        // Measure write time
-        write_time = single_open_write(test_file);
-        if (write_time != (uint64_t)-1) {
-            total_write_time += write_time;
-            valid_write_count++;
-        }
-
-        // Measure file creation time
-        create_time = single_file_create(test_file, i);
-        if (create_time != (uint64_t)-1) {
-            total_create_time += create_time;
-            valid_create_count++;
-        }
-    }
-
-    // Calculate averages
-    uint64_t average_read_time = valid_read_count > 0 ? total_read_time / valid_read_count : 0;
-    uint64_t average_write_time = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
-    uint64_t average_create_time = valid_create_count > 0 ? total_create_time / valid_create_count : 0;
-
     // Prepare CSV file path
     if (snprintf(baseline_csv, sizeof(baseline_csv), "%s/baseline.csv", results_dir) >= sizeof(baseline_csv)) {
         fprintf(stderr, "Path truncation occurred for baseline_csv\n");
         return EXIT_FAILURE;
     }
 
-    // Save results to baseline.csv
+    // Open CSV file for results
     FILE *csv_file = fopen(baseline_csv, "w");
     if (!csv_file) {
         perror("fopen baseline.csv");
         return EXIT_FAILURE;
     }
-    fprintf(csv_file, "Read Time (cycles),Write Time (cycles),Create Time (cycles)\n");
-    fprintf(csv_file, "%lu,%lu,%lu\n", average_read_time, average_write_time, average_create_time);
+    fprintf(csv_file, "Threads,Read Time (cycles),Write Time (cycles),Create Time (cycles)\n");
+
+    // Main test loop over thread counts
+    for (int t_idx = 0; t_idx < T_tests; t_idx++) {
+        int num_threads = thread_counts[t_idx];
+        pthread_t threads[num_threads];
+        thread_data_t thread_data_array[num_threads];
+        char filename[PATH_MAX];
+
+        // Create test files for this thread count
+        for (int i = 0; i < num_threads; i++) {
+            for (int k = 0; k < M; k++) {
+                int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", test_dir, k, i);
+                if (ret >= sizeof(filename)) {
+                    fprintf(stderr, "Error: filename too long, truncated.\n");
+                    exit(EXIT_FAILURE);
+                }
+                create_file(filename);
+            }
+        }
+
+        // Create threads
+        for (int i = 0; i < num_threads; i++) {
+            thread_data_array[i].thread_id = i;
+            thread_data_array[i].n_runs = N_RUNS;
+            thread_data_array[i].m_files = M;
+            strncpy(thread_data_array[i].test_dir, test_dir, PATH_MAX);
+
+            // Initialize per-thread accumulators
+            thread_data_array[i].total_read_time = 0;
+            thread_data_array[i].total_write_time = 0;
+            thread_data_array[i].total_create_time = 0;
+            thread_data_array[i].valid_read_count = 0;
+            thread_data_array[i].valid_write_count = 0;
+            thread_data_array[i].valid_create_count = 0;
+
+            int rc = pthread_create(&threads[i], NULL, thread_test_function, (void*)&thread_data_array[i]);
+            if (rc) {
+                fprintf(stderr, "Error: Unable to create thread %d, rc = %d\n", i, rc);
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // Wait for threads to finish
+        for (int i = 0; i < num_threads; i++) {
+            pthread_join(threads[i], NULL);
+        }
+
+        // Aggregate results from all threads
+        uint64_t total_read_time = 0;
+        uint64_t total_write_time = 0;
+        uint64_t total_create_time = 0;
+        int valid_read_count = 0;
+        int valid_write_count = 0;
+        int valid_create_count = 0;
+
+        for (int i = 0; i < num_threads; i++) {
+            total_read_time += thread_data_array[i].total_read_time;
+            total_write_time += thread_data_array[i].total_write_time;
+            total_create_time += thread_data_array[i].total_create_time;
+            valid_read_count += thread_data_array[i].valid_read_count;
+            valid_write_count += thread_data_array[i].valid_write_count;
+            valid_create_count += thread_data_array[i].valid_create_count;
+        }
+
+        // Compute averages
+        uint64_t average_read_time = valid_read_count > 0 ? total_read_time / valid_read_count : 0;
+        uint64_t average_write_time = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
+        uint64_t average_create_time = valid_create_count > 0 ? total_create_time / valid_create_count : 0;
+
+        // Output results
+        //printf("Threads = %d: Average Read Time = %lu cycles, Average Write Time = %lu cycles, Average Create Time = %lu cycles\n", num_threads, average_read_time, average_write_time, average_create_time);
+
+        // Write to CSV
+        fprintf(csv_file, "%d,%lu,%lu,%lu\n", num_threads, average_read_time, average_write_time, average_create_time);
+
+        // Clean up test files for this thread count
+        for (int i = 0; i < num_threads; i++) {
+            for (int k = 0; k < M; k++) {
+                int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", test_dir, k, i);
+                if (ret >= sizeof(filename)) {
+                    fprintf(stderr, "Error: filename too long, truncated.\n");
+                    exit(EXIT_FAILURE);
+                }
+                remove(filename);
+            }
+        }
+    }
+
     fclose(csv_file);
 
-    // Clean up
-    remove(test_file);
+    // Clean up directories
     cleanup_directory(test_dir);
-    printf("Baseline results saved to %s\n", baseline_csv);
+
+    //printf("Baseline results saved to %s\n", baseline_csv);
 
     return EXIT_SUCCESS;
 }

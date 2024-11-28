@@ -59,7 +59,7 @@ def execute_test(executable):
 
 def run_tests():
     """Run the tests, generate graphs, and clean up."""
-    # Run `make down` before baseline tests
+    # Run make down before baseline tests
     execute_command_ignore_error("make down", "make down")
 
     console.print("[bold green]Starting baseline tests...[/bold green]")
@@ -72,14 +72,15 @@ def run_tests():
             return
         if os.path.exists(baseline_csv):
             baseline_df = pd.read_csv(baseline_csv)
-            raw_data.append(["WITHOUT_MODULE", baseline_df.iloc[0]["Read Time (cycles)"], baseline_df.iloc[0]["Write Time (cycles)"], baseline_df.iloc[0]["Create Time (cycles)"]])
+            for _, row in baseline_df.iterrows():
+                raw_data.append(["WITHOUT_MODULE", row["Threads"], row["Read Time (cycles)"], row["Write Time (cycles)"], row["Create Time (cycles)"]])
 
     # Save baseline results to rawResults.csv
-    raw_df = pd.DataFrame(raw_data, columns=["N", "Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"])
+    raw_df = pd.DataFrame(raw_data, columns=["N", "Threads", "Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"])
     raw_df.to_csv(raw_results_file, index=False)
     console.print(f"[bold green]Baseline test results saved to {raw_results_file}[/bold green]")
 
-    # Run `make up` before RefMon tests
+    # Run make up before RefMon tests
     execute_command_ignore_error("make up", "make up")
 
     console.print("[bold green]Starting RefMon tests...[/bold green]")
@@ -94,10 +95,10 @@ def run_tests():
         if os.path.exists(test_results_csv):
             test_df = pd.read_csv(test_results_csv)
             for _, row in test_df.iterrows():
-                raw_data.append([row["N"], row["Read Time (cycles)"], row["Write Time (cycles)"], row["Create Time (cycles)"]])
+                raw_data.append([row["N"], row["Threads"], row["Read Time (cycles)"], row["Write Time (cycles)"], row["Create Time (cycles)"]])
 
     # Save updated results
-    raw_df = pd.DataFrame(raw_data, columns=["N", "Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"])
+    raw_df = pd.DataFrame(raw_data, columns=["N", "Threads", "Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"])
     raw_df.to_csv(raw_results_file, index=False)
     console.print(f"[bold green]Test results saved to {raw_results_file}[/bold green]")
 
@@ -106,13 +107,13 @@ def run_tests():
 
 
 def generate_boxplots():
-    """Generate boxplots directly from raw results."""
+    """Generate boxplots with Matplotlib using subplots for each thread count."""
     if not os.path.exists(raw_results_file):
         console.print("[bold yellow]Raw results file missing. Perform tests first.[/bold yellow]")
         wait_for_keypress()
         return
-    
-    lower_bound_y, upper_bound_y, show_outliers = get_graph_preferences()
+
+    y_limits, show_outliers = get_graph_preferences()
 
     try:
         raw_df = pd.read_csv(raw_results_file)
@@ -122,63 +123,107 @@ def generate_boxplots():
             shutil.rmtree(graphs_dir)
         os.makedirs(graphs_dir)
 
-        # Determine global Y-axis limits
+        # Ensure 'Threads' is numeric
+        raw_df['Threads'] = pd.to_numeric(raw_df['Threads'])
 
-        # Determine global Y-axis limits if not specified
-        if lower_bound_y == -1 or upper_bound_y == -1:
-            lower_bound_y = min(raw_df["Read Time (cycles)"].min(), raw_df["Write Time (cycles)"].min(), raw_df["Create Time (cycles)"].min())
-            upper_bound_y = max(raw_df["Read Time (cycles)"].max(), raw_df["Write Time (cycles)"].max(), raw_df["Create Time (cycles)"].max())
+        operations = ["Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"]
+        thread_counts = sorted(raw_df["Threads"].unique())
 
-        for col in ["Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"]:
-            plt.figure(figsize=(12, 8))
+        for op in operations:
+            # Determine Y-axis limits for the current operation
+            if op in y_limits and y_limits[op] != (None, None):
+                op_lower_bound_y, op_upper_bound_y = y_limits[op]
+            else:
+                op_lower_bound_y = raw_df[op].min()
+                op_upper_bound_y = raw_df[op].max()
 
-            # Extract unique values of N and group data
-            unique_n = raw_df["N"].unique()
-            grouped_data = [raw_df[raw_df["N"] == n][col] for n in unique_n]
+            # Create a figure with subplots for each thread count
+            fig, axes = plt.subplots(nrows=1, ncols=len(thread_counts), figsize=(16, 6), sharey=True)
 
-            # Generate boxplot
-            plt.boxplot(grouped_data, showfliers=show_outliers, patch_artist=True, tick_labels=unique_n)
-            plt.title(f"Boxplot of {col} by Number of Protected Files")
-            plt.xlabel("Number of Protected Files")
-            plt.ylabel(col)
-            plt.ylim(lower_bound_y, upper_bound_y)
-            plt.grid(True)
+            for ax, thread in zip(axes, thread_counts):
+                # Filter data for the current thread count
+                df_thread = raw_df[raw_df["Threads"] == thread]
 
-            # Save the boxplot
-            output_path = os.path.join(graphs_dir, f"{col.replace(' ', '_')}_boxplot.png")
+                # Get unique 'N' values in desired order
+                desired_n_order = ['WITHOUT_MODULE', '0', '10', '100', '1000']
+                unique_n = [n for n in desired_n_order if n in df_thread["N"].unique()]
+
+                # Collect data for each 'N'
+                data = []
+                labels = []
+                for n in unique_n:
+                    subset = df_thread[df_thread["N"] == n][op].dropna()
+                    if len(subset) > 0:
+                        data.append(subset.values)
+                        labels.append(n)
+
+                if len(data) == 0:
+                    ax.set_visible(False)  # Hide subplot if no data
+                    continue
+
+                # Create boxplot
+                bplot = ax.boxplot(data, showfliers=show_outliers, patch_artist=True)
+                ax.set_title(f"Threads = {int(thread)}")
+                ax.set_xlabel('Number of Protected Files')
+                ax.set_xticklabels(labels, rotation=45)
+                if op_lower_bound_y is not None and op_upper_bound_y is not None:
+                    ax.set_ylim(op_lower_bound_y, op_upper_bound_y)
+                ax.grid(True)
+
+            # Set common Y-axis label
+            axes[0].set_ylabel(op)
+
+            # Set overall title
+            plt.suptitle(f'Boxplots of {op} by Number of Protected Files for Each Thread Count')
+
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust the layout to make room for the suptitle
+
+            # Save the figure
+            output_path = os.path.join(graphs_dir, f"{op.replace(' ', '_')}_boxplot.png")
             plt.savefig(output_path)
 
-            console.print(f"[bold green]Boxplot for {col} saved to {output_path}[/bold green]")
+            console.print(f"[bold green]Boxplot for {op} saved to {output_path}[/bold green]")
 
-        # Display the plots
-        plt.show()
+            # Display the plot
+            plt.show()
 
     except Exception as e:
         console.print(f"[bold red]Failed to generate boxplots: {e}[/bold red]")
         wait_for_keypress()
 
+
 def get_graph_preferences():
-    """Prompt the user for custom Y-axis limits and outliers or default behavior."""
-    lower_bound = -1
-    upper_bound = -1
+    """Prompt the user for custom Y-axis limits per operation and outliers or default behavior."""
+    operations = ["Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"]
+    y_limits = {}
     outliers = True
+
     console.print("[bold yellow]Do you want to specify custom Y-axis limits for the graphs? (y/n)[/bold yellow]")
     choice = console.input("[bold yellow]>>> [/bold yellow]").strip().lower()
     if choice == "y":
-        try:
-            lower_bound = float(console.input("[bold yellow]Enter the lower bound for Y-axis: [/bold yellow]"))
-            upper_bound = float(console.input("[bold yellow]Enter the upper bound for Y-axis: [/bold yellow]"))
-        except ValueError:
-            console.print("[bold red]Invalid input! Using default Y-axis limits.[/bold red]")
+        for op in operations:
+            console.print(f"[bold yellow]Specify Y-axis limits for {op}:[/bold yellow]")
+            try:
+                lower_bound = console.input("[bold yellow]Enter the lower bound for Y-axis (or leave blank for default): [/bold yellow]")
+                upper_bound = console.input("[bold yellow]Enter the upper bound for Y-axis (or leave blank for default): [/bold yellow]")
+                lower_bound = float(lower_bound) if lower_bound.strip() != '' else None
+                upper_bound = float(upper_bound) if upper_bound.strip() != '' else None
+                y_limits[op] = (lower_bound, upper_bound)
+            except ValueError:
+                console.print("[bold red]Invalid input! Using default Y-axis limits for this operation.[/bold red]")
+                y_limits[op] = (None, None)
     elif choice != "n":
         console.print("[bold red]Invalid input! Using default Y-axis limits.[/bold red]")
+
     console.print("[bold yellow]Do you want to show outliers in the graphs? (y/n)[/bold yellow]")
     choice = console.input("[bold yellow]>>> [/bold yellow]").strip().lower()
     if choice == "n":
         outliers = False
     elif choice != "y":
         console.print("[bold red]Invalid input! Showing outliers as default.[/bold red]")
-    return lower_bound, upper_bound, outliers
+
+    return y_limits, outliers
+
 
 def main_menu():
     try:
@@ -212,7 +257,7 @@ def main_menu():
                 console.print("[bold red]Invalid choice. Please try again.[/bold red]")
                 wait_for_keypress()
     except KeyboardInterrupt:
-        execute_command_ignore_error("make down", "make down before exiting")
+        #execute_command_ignore_error("make down", "make down before exiting")
         console.print("\n[bold green]Exiting... Goodbye![/bold green]")
         exit(0)
 

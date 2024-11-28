@@ -19,8 +19,10 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
-#include "syscall_nums.h"
 #include <stdint.h> // For uint64_t
+#include <pthread.h>
+
+#include "syscall_nums.h"
 
 typedef enum {
     REFMON_ACTION_PROTECT,
@@ -36,11 +38,25 @@ enum refmon_ops {
     REFMON_STATE_QUERY = 4
 };
 
+
 #define PATH_TTL -1 // Infinite TTL for protection
 #define M 1         // Number of test files for read/write operations
 #define N_RUNS 1000 // Number of test runs per operation
 #define MAX_PASSW_LEN 32
 #define PATH_MAX 4096
+
+typedef struct {
+    int thread_id;
+    int n_runs;
+    int m_files;
+    char test_dir[PATH_MAX];
+    uint64_t total_read_time;
+    uint64_t total_write_time;
+    uint64_t total_create_time;
+    int valid_read_count;
+    int valid_write_count;
+    int valid_create_count;
+} thread_data_t;
 
 static int verbose = 0; // Global variable for verbosity control
 
@@ -153,6 +169,47 @@ void cleanup_test_directory(const char *dirpath) {
     rmdir(dirpath);
 }
 
+void* thread_test_function(void* arg) {
+    thread_data_t* data = (thread_data_t*)arg;
+    char filename[PATH_MAX];
+
+    for (int k = 0; k < data->n_runs; k++) {
+        for (int i = 0; i < data->m_files; i++) {
+            
+            int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", data->test_dir, i, data->thread_id);
+            if (ret >= sizeof(filename)) {
+                fprintf(stderr, "Error: filename too long, truncated.\n");
+                // Handle the error, e.g., exit or skip this iteration
+                pthread_exit(NULL);
+            }
+
+            // Measure read time
+            uint64_t read_time = single_open_read(filename);
+            if (read_time != (uint64_t)-1) {
+                data->total_read_time += read_time;
+                data->valid_read_count++;
+            }
+
+            // Measure write time
+            uint64_t write_time = single_open_write(filename);
+            if (write_time != (uint64_t)-1) {
+                data->total_write_time += write_time;
+                data->valid_write_count++;
+            }
+
+            // Measure file creation time
+            uint64_t create_time = single_file_create(filename, k);
+            if (create_time != (uint64_t)-1) {
+                data->total_create_time += create_time;
+                data->valid_create_count++;
+            }
+        }
+    }
+
+    pthread_exit(NULL);
+}
+
+
 // Main test function
 int main(int argc, char *argv[]) {
     // Parse command-line arguments
@@ -169,14 +226,16 @@ int main(int argc, char *argv[]) {
     }
 
     int N_values[] = {0, 10, 100, 1000};
+    int thread_counts[] = {1, 2, 4, 8};
     int N_tests = sizeof(N_values) / sizeof(N_values[0]);
+    int T_tests = sizeof(thread_counts) / sizeof(thread_counts[0]);
     char filename[PATH_MAX];
     char password[MAX_PASSW_LEN + 1];
     char *test_dir = "./refmon_test/tests";
     char *protected_dir = "./refmon_test/protected";
     char *results_dir = "./refmon_test/results";
     struct stat st = {0};
-    int N, i, j, k;
+    int N, i, n_idx, t_idx, k;
 
     uint64_t read_time, write_time, create_time;
     uint64_t total_read_time, total_write_time, total_create_time;
@@ -221,12 +280,6 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // Create test files
-    for (int i = 0; i < M; i++) {
-        snprintf(filename, sizeof(filename), "%s/test_file_%d", test_dir, i);
-        create_file(filename);
-    }
-
     // Open CSV file for results
     snprintf(filename, sizeof(filename), "%s/results.csv", results_dir);
     csv_file = fopen(filename, "w");
@@ -234,12 +287,12 @@ int main(int argc, char *argv[]) {
         perror("fopen results.csv");
         exit(EXIT_FAILURE);
     }
-    fprintf(csv_file, "N,Read Time (cycles),Write Time (cycles),Create Time (cycles)\n");
+    fprintf(csv_file, "N,Threads,Read Time (cycles),Write Time (cycles),Create Time (cycles)\n");
 
     // Main test loop
     invoke_refmon_manage(REFMON_SET_REC_ON);
-    for (j = 0; j < N_tests; j++) {
-        N = N_values[j];
+    for (n_idx = 0; n_idx < N_tests; n_idx++) {
+        N = N_values[n_idx];
         if (verbose) printf("\nTesting with N = %d protected files\n", N);
 
         if (N > 0)
@@ -255,61 +308,96 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
+        for (t_idx = 0; t_idx < T_tests; t_idx++) {
+            int num_threads = thread_counts[t_idx];
+            pthread_t threads[num_threads];
+            thread_data_t thread_data_array[num_threads];
 
-        total_read_time = total_write_time = 0;
-        valid_read_count = valid_write_count = 0;
-
-        for (k = 0; k < N_RUNS; k++) {
-            for (i = 0; i < M; i++) {
-                snprintf(filename, sizeof(filename), "%s/test_file_%d", test_dir, i);
-
-                // Measure read time
-                read_time = single_open_read(filename);
-                if (read_time != (uint64_t)-1) {
-                    total_read_time += read_time;
-                    valid_read_count++;
+            // Clean up test files for this thread count
+            for (i = 0; i < num_threads; i++) {
+                for (k = 0; k < M; k++) {
+                    snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", test_dir, k, i);
+                    create_file(filename);
                 }
+            }
 
-                // Measure write time
-                write_time = single_open_write(filename);
-                if (write_time != (uint64_t)-1) {
-                    total_write_time += write_time;
-                    valid_write_count++;
+            // Create threads
+            for (i = 0; i < num_threads; i++) {
+                thread_data_array[i].thread_id = i;
+                thread_data_array[i].n_runs = N_RUNS; // Each thread performs all N_RUNS
+                thread_data_array[i].m_files = M;
+                strncpy(thread_data_array[i].test_dir, test_dir, PATH_MAX);
+
+                // Initialize per-thread accumulators
+                thread_data_array[i].total_read_time = 0;
+                thread_data_array[i].total_write_time = 0;
+                thread_data_array[i].total_create_time = 0;
+                thread_data_array[i].valid_read_count = 0;
+                thread_data_array[i].valid_write_count = 0;
+                thread_data_array[i].valid_create_count = 0;
+
+                int rc = pthread_create(&threads[i], NULL, thread_test_function, (void*)&thread_data_array[i]);
+                if (rc) {
+                    fprintf(stderr, "Error: Unable to create thread %d, rc = %d\n", i, rc);
+                    exit(EXIT_FAILURE);
                 }
+            }
 
-                // Measure file creation time
-                create_time = single_file_create(filename, i);
-                if (create_time != (uint64_t)-1) {
-                    total_create_time += create_time;
-                    valid_create_count++;
+            // Wait for threads to finish
+            for (i = 0; i < num_threads; i++) {
+                pthread_join(threads[i], NULL);
+            }
+
+            // Aggregate results from all threads
+            uint64_t total_read_time = 0;
+            uint64_t total_write_time = 0;
+            uint64_t total_create_time = 0;
+            int valid_read_count = 0;
+            int valid_write_count = 0;
+            int valid_create_count = 0;
+
+            for (i = 0; i < num_threads; i++) {
+                total_read_time += thread_data_array[i].total_read_time;
+                total_write_time += thread_data_array[i].total_write_time;
+                total_create_time += thread_data_array[i].total_create_time;
+                valid_read_count += thread_data_array[i].valid_read_count;
+                valid_write_count += thread_data_array[i].valid_write_count;
+                valid_create_count += thread_data_array[i].valid_create_count;
+            }
+
+            // Compute averages
+            uint64_t average_read_time = valid_read_count > 0 ? total_read_time / valid_read_count : 0;
+            uint64_t average_write_time = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
+            uint64_t average_create_time = valid_create_count > 0 ? total_create_time / valid_create_count : 0;
+
+            // Output results
+            if (verbose) {
+                printf("N = %d, Threads = %d: Average Read Time = %lu cycles, Average Write Time = %lu cycles, Average Create Time = %lu cycles\n",
+                       N, num_threads, average_read_time, average_write_time, average_create_time);
+            }
+
+            // Write to CSV
+            fprintf(csv_file, "%d,%d,%lu,%lu,%lu\n", N, num_threads, average_read_time, average_write_time, average_create_time);
+
+            // Clean up test files for this thread count
+            for (i = 0; i < num_threads; i++) {
+                for (k = 0; k < M; k++) {
+                    snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", test_dir, k, i);
+                    remove(filename);
                 }
             }
         }
 
-        // Compute averages
-        read_times[j] = valid_read_count > 0 ? total_read_time / valid_read_count : 0;
-        write_times[j] = valid_write_count > 0 ? total_write_time / valid_write_count : 0;
-        create_times[j] = valid_create_count > 0 ? total_create_time / valid_create_count : 0;
-
-        fprintf(csv_file, "%d,%lu,%lu,%lu\n", N, read_times[j], write_times[j], create_times[j]);
-
-        if (N > 0)
-        {
-            for (i = 0; i < N; i++)
-            {
+        // Unprotect files if N > 0
+        if (N > 0) {
+            for (i = 0; i < N; i++) {
                 snprintf(filename, sizeof(filename), "%s/protected_file_%d", test_dir, i);
                 if (verbose) printf("Unprotecting file: %s\n", filename);
-                if (invoke_refmon_reconfigure(REFMON_ACTION_UNPROTECT, password, filename, PATH_TTL) > 0)
-                {
+                if (invoke_refmon_reconfigure(REFMON_ACTION_UNPROTECT, password, filename, PATH_TTL) < 0) {
                     fprintf(stderr, "Failed to unprotect file: %s\n", filename);
                 }
                 remove(filename);
             }
-        }
-
-        if (verbose) {
-            printf("N = %d: Average Read Time = %lu cycles, Average Write Time = %lu cycles, Average Create Time = %lu cycles\n",
-                   N, read_times[j], write_times[j], create_times[j]);
         }
     }
 

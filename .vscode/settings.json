@@ -23,6 +23,7 @@
         "blkdev.h": "c",
         "syscalls.h": "c",
         "hashtables_utiles.h": "c",
-        "rwlock.h": "c"
+        "rwlock.h": "c",
+        "pthread.h": "c"
     }
 }
