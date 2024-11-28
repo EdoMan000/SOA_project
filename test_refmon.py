@@ -170,13 +170,14 @@ def get_graph_preferences():
             upper_bound = float(console.input("[bold yellow]Enter the upper bound for Y-axis: [/bold yellow]"))
         except ValueError:
             console.print("[bold red]Invalid input! Using default Y-axis limits.[/bold red]")
+    elif choice != "n":
+        console.print("[bold red]Invalid input! Using default Y-axis limits.[/bold red]")
     console.print("[bold yellow]Do you want to show outliers in the graphs? (y/n)[/bold yellow]")
     choice = console.input("[bold yellow]>>> [/bold yellow]").strip().lower()
     if choice == "n":
-        try:
-            outliers = False
-        except ValueError:
-            console.print("[bold red]Invalid input! Showing outliers as default.[/bold red]")
+        outliers = False
+    elif choice != "y":
+        console.print("[bold red]Invalid input! Showing outliers as default.[/bold red]")
     return lower_bound, upper_bound, outliers
 
 def main_menu():

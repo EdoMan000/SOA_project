@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
                 break;
             case 2:
                 char action[10], password[256], path[256], ttl_input[16];
-                int ttl; // TTL in minutes
+                int ttl = 0; // TTL in minutes
 
                 printf(YELLOW "\nEnter action (protect/unprotect): " RESET);
                 scanf("%s", action);
@@ -152,8 +152,10 @@ int main(int argc, char** argv) {
                 printf(YELLOW "Enter path: " RESET);
                 scanf("%s", path);
 
-                printf(YELLOW "Enter TTL ('infinite' or a positive integer representing minutes): " RESET);
-                scanf("%s", ttl_input);
+                if(action ==  REFMON_ACTION_PROTECT) {
+                    printf(YELLOW "Enter TTL ('infinite' or a positive integer representing minutes): " RESET);
+                    scanf("%s", ttl_input);
+                }
                 getchar();
                 
                 if (strcmp(ttl_input, "infinite") == 0) {

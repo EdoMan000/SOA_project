@@ -168,7 +168,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    int N_values[] = {0, 10, 100, 200, 300, 400, 500};
+    int N_values[] = {0, 10, 100, 1000};
     int N_tests = sizeof(N_values) / sizeof(N_values[0]);
     char filename[PATH_MAX];
     char password[MAX_PASSW_LEN + 1];

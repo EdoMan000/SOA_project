@@ -21,6 +21,7 @@
         "workqueue.h": "c",
         "early_lookup.h": "c",
         "blkdev.h": "c",
-        "syscalls.h": "c"
+        "syscalls.h": "c",
+        "hashtables_utiles.h": "c"
     }
 }

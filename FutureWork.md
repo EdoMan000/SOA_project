@@ -6,6 +6,8 @@
 
 - **USE CASE nell'articolo** -> far vedere come sia semplice gestire uno specifico USE CASE (backups... / VMs...)
 
+- **STARTUP-TIME PROTECTED PATHS** -> s
+
 - **Resolve full pathname until root in log** (see dpath usage when i print list of protected paths -> that actually solves it !!!! OKKKK, try to find similar way for other probes that use dentry_path_raw)
 
 - **SingleFS for log file -> IOCTL or ProcFS (see if possible in kernel module?)**
