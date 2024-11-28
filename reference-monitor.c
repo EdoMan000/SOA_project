@@ -51,6 +51,8 @@
 #include <linux/blk_types.h>
 #include <linux/blkdev.h>
 #include <linux/hashtable.h>
+#include <linux/rwlock.h>
+
 #include "lib/include/scth.h"
 #include "utils/include/sha256_utils.h"
 #include "utils/include/general_utils.h"
@@ -123,7 +125,7 @@ typedef struct _refmon_path {
 // } refmon;
 typedef struct _refmon {
     state_t state;
-    spinlock_t lock;
+    rwlock_t lock;  // Changed from spinlock_t to rwlock_t
     char *password_digest;  
     struct hlist_head protected_paths[1 << HASH_TABLE_BITS];  // Hash table
 } refmon;
@@ -203,8 +205,9 @@ void increase_time(struct work_struct *work) {
         struct hlist_node *tmp;
         int bkt;
 
-        spin_lock(&reference_monitor.lock); 
+        //spin_lock(&reference_monitor.lock); 
         //list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
+        write_lock(&reference_monitor.lock); 
         hash_for_each_safe(reference_monitor.protected_paths, bkt, tmp, entry, hnode) {
                 if(entry->deadline_TTL == UINT_MAX){
                         continue;
@@ -225,7 +228,8 @@ void increase_time(struct work_struct *work) {
                         }
                 }  
         }
-        spin_unlock(&reference_monitor.lock);
+        //spin_unlock(&reference_monitor.lock);
+        write_unlock(&reference_monitor.lock); 
 
         refmon_time ++;
         schedule_delayed_work(&the_time_increaser, msecs_to_jiffies(60000));
@@ -637,18 +641,21 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                         // char path_buf[PATH_MAX];
                         // struct dentry *dentry = file->f_path.dentry;
                         // pathname = dentry_path_raw(dentry, path_buf, PATH_MAX);
-                        spin_lock(&reference_monitor.lock);
+                        //spin_lock(&reference_monitor.lock);
+                        read_lock(&reference_monitor.lock); 
                         //if(is_dentry_protected(dentry)){
                         if(is_dentry_protected(file->f_path.dentry)){
                                 //pathname = kstrdup(pathname, GFP_ATOMIC);
                                 //submit_intrusion_log_work("DENIED WRITE_ON", pathname, NULL);
                                 path = kstrdup(path, GFP_ATOMIC);
                                 submit_intrusion_log_work("DENIED WRITE_ON", path, NULL);
-                                spin_unlock(&reference_monitor.lock);
+                                //spin_unlock(&reference_monitor.lock);
+                                read_unlock(&reference_monitor.lock); 
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
                         }
-                        spin_unlock(&reference_monitor.lock);
+                        //spin_unlock(&reference_monitor.lock);
+                        read_unlock(&reference_monitor.lock); 
 
                 }
         }
@@ -666,19 +673,22 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                 unsigned long inode_num = d_inode(file->f_path.dentry)->i_ino;
                 uuid_t fs_uuid = d_inode(file->f_path.dentry)->i_sb->s_uuid;
                 unsigned long hash_key = compute_hash_key(inode_num, &fs_uuid);
-                spin_lock(&reference_monitor.lock);
+                //spin_lock(&reference_monitor.lock);
+                read_lock(&reference_monitor.lock); 
                 hash_for_each_possible(reference_monitor.protected_paths, entry, hnode, hash_key) {
 		        //check if device is protected
 			if (entry->fs_bdev == bdev) {
                                 path = kstrdup(path, GFP_ATOMIC);
 				//log_message(LOG_INFO, "Denied access on protected block_device %s -> (%d, %d)\n", path, MAJOR(bdev), MINOR(bdev));
                                 submit_intrusion_log_work("DENIED B_DEV_WR", path, NULL);
-                                spin_unlock(&reference_monitor.lock);
+                                //spin_unlock(&reference_monitor.lock);
+                                read_unlock(&reference_monitor.lock); 
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
 			}
 		}
-                spin_unlock(&reference_monitor.lock);
+                //spin_unlock(&reference_monitor.lock);
+                read_unlock(&reference_monitor.lock); 
 	}
 
         return 0; 
@@ -1249,37 +1259,44 @@ asmlinkage long sys_refmon_manage(int code){
         int ret = 0;
         //log_message(LOG_INFO, "sys_refmon_manage called from thread %d\n",current->pid);
 
-        spin_lock(&reference_monitor.lock);
-
         if(CURRENT_EUID != 0){
                 log_message(LOG_ERR, "Current EUID is not 0\n");
-                ret = -1;
-                goto exit;
+                return -1;
         }
-        switch (code)
-        {
-                case REFMON_SET_OFF:
-                        update_state(OFF, 0);
-                        break;
-                case REFMON_SET_ON:
-                        update_state(ON, 0);
-                        break;
-                case REFMON_SET_REC_OFF:
-                        update_state(OFF, 1);
-                        break;
-                case REFMON_SET_REC_ON:
-                        update_state(ON, 1);
-                        break;
-                case REFMON_STATE_QUERY:
-                        print_current_refmon_state();
-                        break;
-                default:
-                        log_message(LOG_ERR, "Provided code is unknown.\n");
-                        ret = -EINVAL;
-                        break;
+
+        //spin_lock(&reference_monitor.lock);
+        if (code == REFMON_STATE_QUERY) {
+                // Only reading state
+                read_lock(&reference_monitor.lock);
+                print_current_refmon_state();
+                read_unlock(&reference_monitor.lock);
+        } else{
+                write_lock(&reference_monitor.lock); 
+                switch (code)
+                {
+                        case REFMON_SET_OFF:
+                                update_state(OFF, 0);
+                                break;
+                        case REFMON_SET_ON:
+                                update_state(ON, 0);
+                                break;
+                        case REFMON_SET_REC_OFF:
+                                update_state(OFF, 1);
+                                break;
+                        case REFMON_SET_REC_ON:
+                                update_state(ON, 1);
+                                break;
+                        // case REFMON_STATE_QUERY:
+                        //         print_current_refmon_state();
+                        //         break;
+                        default:
+                                log_message(LOG_ERR, "Provided code is unknown.\n");
+                                ret = -EINVAL;
+                                break;
+                }
+                //spin_unlock(&reference_monitor.lock);
+                write_unlock(&reference_monitor.lock); 
         }
-exit:
-        spin_unlock(&reference_monitor.lock);
         return ret;
 }
 
@@ -1329,7 +1346,8 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
         }
         //log_message(LOG_INFO, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", action_str, kernel_passw, kernel_path, curr_pid);
 
-        spin_lock(&reference_monitor.lock);
+        //spin_lock(&reference_monitor.lock);
+        write_lock(&reference_monitor.lock); 
 
         if(CURRENT_EUID != 0) {
                 log_message(LOG_ERR, "Current EUID is not 0.\n");
@@ -1417,7 +1435,8 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
         }
 
 exit:
-        spin_unlock(&reference_monitor.lock);
+        //spin_unlock(&reference_monitor.lock);
+        write_unlock(&reference_monitor.lock); 
         kfree(kernel_passw);
         kfree(kernel_path);
         return ret;
@@ -1448,8 +1467,9 @@ int init_module(void) {
 
         //init reference monitor struct
         reference_monitor.state = OFF; //starting as REC-OFF
-        spin_lock_init(&reference_monitor.lock);
+        //spin_lock_init(&reference_monitor.lock);
         //INIT_LIST_HEAD(&reference_monitor.protected_paths);
+        rwlock_init(&reference_monitor.lock);
         hash_init(reference_monitor.protected_paths);
         reference_monitor.password_digest = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);
         if(!reference_monitor.password_digest){

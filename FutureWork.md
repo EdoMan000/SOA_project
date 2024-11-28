@@ -1,8 +1,7 @@
 # Future Work
 
 - **TEST PRESTAZIONI** 
-1) struttura più performante (es: hash tables)
-2) USE READ/WRITE SPINLOCKS -> provare test di concorrenza (fare le stesse operazioni scalando i thread 1/2/4/8)
+1) provare test di concorrenza (fare le stesse operazioni scalando i thread 1/2/4/8)
 
 - **USE CASE nell'articolo** -> far vedere come sia semplice gestire uno specifico USE CASE (backups... / VMs...)
 
