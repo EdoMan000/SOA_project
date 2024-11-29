@@ -49,7 +49,9 @@ typedef struct {
     int thread_id;
     int n_runs;
     int m_files;
-    char test_dir[PATH_MAX];
+    char read_dir[PATH_MAX];
+    char write_dir[PATH_MAX];
+    char create_dir[PATH_MAX];
     uint64_t total_read_time;
     uint64_t total_write_time;
     uint64_t total_create_time;
@@ -99,7 +101,7 @@ uint64_t single_file_create(const char *filename, int iteration) {
     if (verbose) printf("Opening file for creation: %s\n", new_file);
 
     start_cycles = rdtsc();
-    int fd = open(new_file, O_CREAT | O_WRONLY, 0666);
+    int fd = open(new_file, O_CREAT | O_WRONLY | O_TRUNC, 0666);
     end_cycles = rdtsc();
 
     if (fd < 0) {
@@ -151,7 +153,7 @@ uint64_t single_open_write(const char *filename) {
 }
 
 // Function to delete all files in a directory and the directory itself
-void cleanup_test_directory(const char *dirpath) {
+void cleanup_directory(const char *dirpath) {
     if (verbose) printf("Cleaning up test directory: %s\n", dirpath);
     DIR *dir = opendir(dirpath);
     if (dir) {
@@ -175,13 +177,12 @@ void* thread_test_function(void* arg) {
 
     for (int k = 0; k < data->n_runs; k++) {
         for (int i = 0; i < data->m_files; i++) {
-            
-            int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", data->test_dir, i, data->thread_id);
+            int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", data->read_dir, i, data->thread_id);
             if (ret >= sizeof(filename)) {
                 fprintf(stderr, "Error: filename too long, truncated.\n");
-                // Handle the error, e.g., exit or skip this iteration
                 pthread_exit(NULL);
             }
+            create_file(filename);
 
             // Measure read time
             uint64_t read_time = single_open_read(filename);
@@ -189,12 +190,27 @@ void* thread_test_function(void* arg) {
                 data->total_read_time += read_time;
                 data->valid_read_count++;
             }
+        }
+        for (int i = 0; i < data->m_files; i++) {
+            int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", data->write_dir, i, data->thread_id);
+            if (ret >= sizeof(filename)) {
+                fprintf(stderr, "Error: filename too long, truncated.\n");
+                pthread_exit(NULL);
+            }
+            create_file(filename);
 
             // Measure write time
             uint64_t write_time = single_open_write(filename);
             if (write_time != (uint64_t)-1) {
                 data->total_write_time += write_time;
                 data->valid_write_count++;
+            }
+        }
+        for (int i = 0; i < data->m_files; i++) {
+            int ret = snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", data->create_dir, i, data->thread_id);
+            if (ret >= sizeof(filename)) {
+                fprintf(stderr, "Error: filename too long, truncated.\n");
+                pthread_exit(NULL);
             }
 
             // Measure file creation time
@@ -225,13 +241,15 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    int N_values[] = {0, 10, 100, 1000};
+    int N_values[] = {0, 10, 100, 200, 300, 400, 500};
     int thread_counts[] = {1, 2, 4, 8};
     int N_tests = sizeof(N_values) / sizeof(N_values[0]);
     int T_tests = sizeof(thread_counts) / sizeof(thread_counts[0]);
     char filename[PATH_MAX];
     char password[MAX_PASSW_LEN + 1];
-    char *test_dir = "./refmon_test/tests";
+    char *read_dir = "./refmon_test/read";
+    char *write_dir = "./refmon_test/write";
+    char *create_dir = "./refmon_test/create";
     char *protected_dir = "./refmon_test/protected";
     char *results_dir = "./refmon_test/results";
     struct stat st = {0};
@@ -267,8 +285,16 @@ int main(int argc, char *argv[]) {
     fclose(pass_file);
 
     // Prepare directories
-    if (stat(test_dir, &st) == -1 && mkdir(test_dir, 0666) != 0) {
-        perror("mkdir test_dir");
+    if (stat(read_dir, &st) == -1 && mkdir(read_dir, 0666) != 0) {
+        perror("mkdir read_dir");
+        exit(EXIT_FAILURE);
+    }
+    if (stat(write_dir, &st) == -1 && mkdir(write_dir, 0666) != 0) {
+        perror("mkdir write_dir");
+        exit(EXIT_FAILURE);
+    }
+    if (stat(create_dir, &st) == -1 && mkdir(create_dir, 0666) != 0) {
+        perror("mkdir create_dir");
         exit(EXIT_FAILURE);
     }
     if (stat(protected_dir, &st) == -1 && mkdir(protected_dir, 0666) != 0) {
@@ -299,7 +325,7 @@ int main(int argc, char *argv[]) {
         {
             for (i = 0; i < N; i++)
             {
-                snprintf(filename, sizeof(filename), "%s/protected_file_%d", test_dir, i);
+                snprintf(filename, sizeof(filename), "%s/protected_file_%d", protected_dir, i);
                 create_file(filename);
                 if (verbose) printf("Protecting file: %s\n", filename);
                 if (invoke_refmon_reconfigure(REFMON_ACTION_PROTECT, password, filename, PATH_TTL) < 0)
@@ -313,20 +339,14 @@ int main(int argc, char *argv[]) {
             pthread_t threads[num_threads];
             thread_data_t thread_data_array[num_threads];
 
-            // Clean up test files for this thread count
-            for (i = 0; i < num_threads; i++) {
-                for (k = 0; k < M; k++) {
-                    snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", test_dir, k, i);
-                    create_file(filename);
-                }
-            }
-
             // Create threads
             for (i = 0; i < num_threads; i++) {
                 thread_data_array[i].thread_id = i;
                 thread_data_array[i].n_runs = N_RUNS; // Each thread performs all N_RUNS
                 thread_data_array[i].m_files = M;
-                strncpy(thread_data_array[i].test_dir, test_dir, PATH_MAX);
+                strncpy(thread_data_array[i].read_dir, read_dir, PATH_MAX);
+                strncpy(thread_data_array[i].write_dir, write_dir, PATH_MAX);
+                strncpy(thread_data_array[i].create_dir, create_dir, PATH_MAX);
 
                 // Initialize per-thread accumulators
                 thread_data_array[i].total_read_time = 0;
@@ -378,20 +398,12 @@ int main(int argc, char *argv[]) {
 
             // Write to CSV
             fprintf(csv_file, "%d,%d,%lu,%lu,%lu\n", N, num_threads, average_read_time, average_write_time, average_create_time);
-
-            // Clean up test files for this thread count
-            for (i = 0; i < num_threads; i++) {
-                for (k = 0; k < M; k++) {
-                    snprintf(filename, sizeof(filename), "%s/test_file_%d_thread_%d", test_dir, k, i);
-                    remove(filename);
-                }
-            }
         }
 
         // Unprotect files if N > 0
         if (N > 0) {
             for (i = 0; i < N; i++) {
-                snprintf(filename, sizeof(filename), "%s/protected_file_%d", test_dir, i);
+                snprintf(filename, sizeof(filename), "%s/protected_file_%d", protected_dir, i);
                 if (verbose) printf("Unprotecting file: %s\n", filename);
                 if (invoke_refmon_reconfigure(REFMON_ACTION_UNPROTECT, password, filename, PATH_TTL) < 0) {
                     fprintf(stderr, "Failed to unprotect file: %s\n", filename);
@@ -404,8 +416,10 @@ int main(int argc, char *argv[]) {
     fclose(csv_file);
 
     // Cleanup
-    cleanup_test_directory(test_dir);
-    cleanup_test_directory(protected_dir);
+    cleanup_directory(read_dir);
+    cleanup_directory(write_dir);
+    cleanup_directory(create_dir);
+    cleanup_directory(protected_dir);
     invoke_refmon_manage(REFMON_SET_OFF);
 
     if (verbose) printf("\nResults saved to %s/results.csv\n", results_dir);

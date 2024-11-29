@@ -99,35 +99,21 @@ typedef enum state {
         OFF
 } state_t;
 
-// typedef struct _refmon_path {
-//         struct path actual_path;
-//         unsigned long inode_number;
-//         dev_t fs_bdev;
-//         uuid_t fs_uuid;
-//         uint64_t deadline_TTL;
-//         struct list_head list;
-// } refmon_path;
 typedef struct _refmon_path {
     struct path actual_path;
     unsigned long inode_number;
     dev_t fs_bdev;
     uuid_t fs_uuid;
     uint64_t deadline_TTL;
-    struct hlist_node hnode;  // Hash node
+    struct hlist_node hnode;  
 } refmon_path;
 
 
-// typedef struct _refmon {
-//         state_t state;
-//         spinlock_t lock;
-//         char *password_digest;  
-//         struct list_head protected_paths;           
-// } refmon;
 typedef struct _refmon {
     state_t state;
-    rwlock_t lock;  // Changed from spinlock_t to rwlock_t
+    rwlock_t lock;  
     char *password_digest;  
-    struct hlist_head protected_paths[1 << HASH_TABLE_BITS];  // Hash table
+    struct hlist_head protected_paths[1 << HASH_TABLE_BITS];  
 } refmon;
 
 
@@ -201,12 +187,9 @@ void increase_time(struct work_struct *work) {
         char path_buf[PATH_MAX];
         char *pathname;
         refmon_path *entry;
-        //refmon_path *tmp;
         struct hlist_node *tmp;
         int bkt;
 
-        //spin_lock(&reference_monitor.lock); 
-        //list_for_each_entry_safe(entry, tmp, &reference_monitor.protected_paths, list) {
         write_lock(&reference_monitor.lock); 
         hash_for_each_safe(reference_monitor.protected_paths, bkt, tmp, entry, hnode) {
                 if(entry->deadline_TTL == UINT_MAX){
@@ -214,7 +197,6 @@ void increase_time(struct work_struct *work) {
                 } else{
                         if (refmon_time >= entry->deadline_TTL) {
                                 pathname = dentry_path_raw(entry->actual_path.dentry, path_buf, PATH_MAX);
-                                //list_del(&entry->list);
                                 hash_del(&entry->hnode);
                                 path_put(&entry->actual_path); 
                                 kfree(entry);
@@ -228,7 +210,6 @@ void increase_time(struct work_struct *work) {
                         }
                 }  
         }
-        //spin_unlock(&reference_monitor.lock);
         write_unlock(&reference_monitor.lock); 
 
         refmon_time ++;
@@ -460,7 +441,6 @@ static int is_path_protected(const char *kern_path_str) {
         if (kern_path(kern_path_str, LOOKUP_FOLLOW, &path_obj)) {
                 return -1;
         }
-        //list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
         unsigned long inode_num = d_inode(path_obj.dentry)->i_ino;
         uuid_t fs_uuid = d_inode(path_obj.dentry)->i_sb->s_uuid;
         unsigned long hash_key = compute_hash_key(inode_num, &fs_uuid);
@@ -485,7 +465,6 @@ static int is_path_protected(const char *kern_path_str) {
 static int is_inode_protected(unsigned long inode_num, uuid_t fs_uuid) {
         refmon_path *entry;
 
-        //list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
         unsigned long hash_key = compute_hash_key(inode_num, &fs_uuid);
         hash_for_each_possible(reference_monitor.protected_paths, entry, hnode, hash_key) {
                 if (entry->inode_number == inode_num && memcmp((void *)&(entry->fs_uuid), (void *)&fs_uuid, sizeof(uuid_t)) == 0) { 
@@ -544,7 +523,6 @@ static refmon_path *get_protected_path_entry(const char *kern_path_str) {
                 return NULL;
         }
 
-        //list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
         unsigned long inode_num = d_inode(path_obj.dentry)->i_ino;
         uuid_t fs_uuid = d_inode(path_obj.dentry)->i_sb->s_uuid;
         unsigned long hash_key = compute_hash_key(inode_num, &fs_uuid);
@@ -669,11 +647,9 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
         refmon_path* entry;
 	if (bdev) {	
                 //log_message(LOG_INFO, "Checking block_device %s -> (%d, %d)\n", path, MAJOR(bdev), MINOR(bdev));
-		//list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
                 unsigned long inode_num = d_inode(file->f_path.dentry)->i_ino;
                 uuid_t fs_uuid = d_inode(file->f_path.dentry)->i_sb->s_uuid;
                 unsigned long hash_key = compute_hash_key(inode_num, &fs_uuid);
-                //spin_lock(&reference_monitor.lock);
                 read_lock(&reference_monitor.lock); 
                 hash_for_each_possible(reference_monitor.protected_paths, entry, hnode, hash_key) {
 		        //check if device is protected
@@ -681,13 +657,11 @@ static int handler_security_file_open(struct kretprobe_instance *ri, struct pt_r
                                 path = kstrdup(path, GFP_ATOMIC);
 				//log_message(LOG_INFO, "Denied access on protected block_device %s -> (%d, %d)\n", path, MAJOR(bdev), MINOR(bdev));
                                 submit_intrusion_log_work("DENIED B_DEV_WR", path, NULL);
-                                //spin_unlock(&reference_monitor.lock);
                                 read_unlock(&reference_monitor.lock); 
                                 regs->ax = (unsigned long) -EACCES;
                                 return 0;
 			}
 		}
-                //spin_unlock(&reference_monitor.lock);
                 read_unlock(&reference_monitor.lock); 
 	}
 
@@ -1214,13 +1188,11 @@ static void print_current_refmon_state(void){
                         log_message(LOG_INFO, "Current state is REC-OFF.\n");
                 }
         }
-        //if (list_empty(&reference_monitor.protected_paths)) {
         if (hash_empty(reference_monitor.protected_paths)) {
                 log_message(LOG_INFO, "Currently there are no protected paths.\n");
         } else {
                 log_message(LOG_INFO, "Listing all protected paths:\n");
                 refmon_path *entry;
-                //list_for_each_entry(entry, &reference_monitor.protected_paths, list) {
                 hash_for_each(reference_monitor.protected_paths, bkt, entry, hnode) {
                         path = entry->actual_path;
                         pathname = d_path(&path, buf, PAGE_SIZE);
@@ -1264,7 +1236,6 @@ asmlinkage long sys_refmon_manage(int code){
                 return -1;
         }
 
-        //spin_lock(&reference_monitor.lock);
         if (code == REFMON_STATE_QUERY) {
                 // Only reading state
                 read_lock(&reference_monitor.lock);
@@ -1286,9 +1257,6 @@ asmlinkage long sys_refmon_manage(int code){
                         case REFMON_SET_REC_ON:
                                 update_state(ON, 1);
                                 break;
-                        // case REFMON_STATE_QUERY:
-                        //         print_current_refmon_state();
-                        //         break;
                         default:
                                 log_message(LOG_ERR, "Provided code is unknown.\n");
                                 ret = -EINVAL;
@@ -1346,7 +1314,6 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
         }
         //log_message(LOG_INFO, "sys_refmon_reconfigure(%s, %s, %s) called from thread %d.\n", action_str, kernel_passw, kernel_path, curr_pid);
 
-        //spin_lock(&reference_monitor.lock);
         write_lock(&reference_monitor.lock); 
 
         if(CURRENT_EUID != 0) {
@@ -1382,7 +1349,6 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                                         }else{
                                                 the_refmon_path->deadline_TTL = refmon_time + path_ttl;
                                         }
-                                        //list_add(&the_refmon_path->list, &reference_monitor.protected_paths);
                                         unsigned long hash_key = compute_hash_key(the_refmon_path->inode_number, &the_refmon_path->fs_uuid);
                                         hash_add(reference_monitor.protected_paths, &the_refmon_path->hnode, hash_key);
                                         if(path_ttl == -1){
@@ -1414,7 +1380,6 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
                                         goto exit;
                                 case 1:
                                         the_refmon_path = get_protected_path_entry(kernel_path);
-                                        //list_del(&the_refmon_path->list);
                                         hash_del(&the_refmon_path->hnode);
                                         path_put(&the_refmon_path->actual_path); 
                                         kfree(the_refmon_path);
@@ -1435,7 +1400,6 @@ asmlinkage long sys_refmon_reconfigure(refmon_action_t action, char __user *pass
         }
 
 exit:
-        //spin_unlock(&reference_monitor.lock);
         write_unlock(&reference_monitor.lock); 
         kfree(kernel_passw);
         kfree(kernel_path);
@@ -1467,8 +1431,6 @@ int init_module(void) {
 
         //init reference monitor struct
         reference_monitor.state = OFF; //starting as REC-OFF
-        //spin_lock_init(&reference_monitor.lock);
-        //INIT_LIST_HEAD(&reference_monitor.protected_paths);
         rwlock_init(&reference_monitor.lock);
         hash_init(reference_monitor.protected_paths);
         reference_monitor.password_digest = kmalloc(SHA256_DIGEST_SIZE, GFP_KERNEL);

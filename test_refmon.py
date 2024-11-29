@@ -60,7 +60,7 @@ def execute_test(executable):
 def run_tests():
     """Run the tests, generate graphs, and clean up."""
     # Run make down before baseline tests
-    execute_command_ignore_error("make down", "make down")
+    execute_command_ignore_error("sudo make down", "make down")
 
     console.print("[bold green]Starting baseline tests...[/bold green]")
     raw_data = []
@@ -73,7 +73,7 @@ def run_tests():
         if os.path.exists(baseline_csv):
             baseline_df = pd.read_csv(baseline_csv)
             for _, row in baseline_df.iterrows():
-                raw_data.append(["WITHOUT_MODULE", row["Threads"], row["Read Time (cycles)"], row["Write Time (cycles)"], row["Create Time (cycles)"]])
+                raw_data.append(["NO_REFMON", row["Threads"], row["Read Time (cycles)"], row["Write Time (cycles)"], row["Create Time (cycles)"]])
 
     # Save baseline results to rawResults.csv
     raw_df = pd.DataFrame(raw_data, columns=["N", "Threads", "Read Time (cycles)", "Write Time (cycles)", "Create Time (cycles)"])
@@ -104,6 +104,14 @@ def run_tests():
 
     # Generate and show boxplots
     generate_boxplots()
+
+def custom_sort_key(value):
+    # Try to convert to float to determine if it's a number
+    try:
+        float(value)
+        return (1, float(value))  # Numbers come second, sorted numerically
+    except ValueError:
+        return (0, value.lower())  # Strings come first, sorted lexicographically
 
 
 def generate_boxplots():
@@ -145,8 +153,7 @@ def generate_boxplots():
                 df_thread = raw_df[raw_df["Threads"] == thread]
 
                 # Get unique 'N' values in desired order
-                desired_n_order = ['WITHOUT_MODULE', '0', '10', '100', '1000']
-                unique_n = [n for n in desired_n_order if n in df_thread["N"].unique()]
+                unique_n = sorted(df_thread["N"].unique(), key=custom_sort_key)
 
                 # Collect data for each 'N'
                 data = []
@@ -185,7 +192,8 @@ def generate_boxplots():
             console.print(f"[bold green]Boxplot for {op} saved to {output_path}[/bold green]")
 
             # Display the plot
-            plt.show()
+            #plt.show()
+        wait_for_keypress()
 
     except Exception as e:
         console.print(f"[bold red]Failed to generate boxplots: {e}[/bold red]")
